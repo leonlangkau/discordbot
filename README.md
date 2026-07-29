@@ -153,6 +153,16 @@ Anything set per guild with `/scrimconfig server` overrides the environment defa
 
 ## Wiring up your CS2 server
 
+Don't have a CS2 dedicated server yet? `scripts/setup_cs2_server.sh` provisions one on a fresh Ubuntu/Debian VPS — SteamCMD install, a non-root `steam` user, `server.cfg` with a generated RCON password, and a systemd service. Copy it to your VPS and run it there as root:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/leonlangkau/discordbot/claude/discord-bot-server-setup-hyxdow/scripts/setup_cs2_server.sh -o setup_cs2_server.sh
+chmod +x setup_cs2_server.sh
+./setup_cs2_server.sh
+```
+
+It prints the server address, RCON password, and the exact `.env`/`/scrimconfig` values to paste below when it's done. See the comments at the top of the script for overridable options (port, map, join password, GSLT).
+
 On your VPS, make sure RCON is enabled in your server config (`rcon_password "..."` in `server.cfg`, and the RCON port — same as the game port — reachable over TCP from wherever the bot runs). Then either set the `SERVER_*`/`RCON_PASSWORD` environment variables above, or configure it in Discord:
 
 ```
