@@ -11,6 +11,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import rcon
+from settings import server_settings
 
 if TYPE_CHECKING:
     from bot import ScrimBot
@@ -34,12 +35,12 @@ MAP_CHOICES = [
 
 
 def connect_string(config) -> str | None:
-    if not config or not config["server_host"]:
+    srv = server_settings(config)
+    if not srv:
         return None
-    port = config["server_port"] or 27015
-    line = f"connect {config['server_host']}:{port}"
-    if config["server_password"]:
-        line += f"; password {config['server_password']}"
+    line = f"connect {srv['host']}:{srv['port']}"
+    if srv["password"]:
+        line += f"; password {srv['password']}"
     return line
 
 
@@ -271,14 +272,15 @@ async def start_scrim(bot: ScrimBot, guild: discord.Guild, scrim) -> str:
     await refresh_announcement(bot, scrim["id"])
 
     config = await bot.db.get_config(guild.id)
+    srv = server_settings(config)
 
     # Switch the server to the picked map if RCON is configured.
-    if config and config["rcon_password"] and config["server_host"] and scrim["map"]:
+    if srv and srv["rcon_password"] and scrim["map"]:
         try:
             await rcon.run_command(
-                config["server_host"],
-                config["server_port"] or 27015,
-                config["rcon_password"],
+                srv["host"],
+                srv["port"],
+                srv["rcon_password"],
                 f"changelevel {scrim['map']}",
             )
             note += f"\n🗺️ Server switched to `{scrim['map']}` via RCON."

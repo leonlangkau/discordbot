@@ -9,6 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import rcon
+from settings import server_settings
 
 if TYPE_CHECKING:
     from bot import ScrimBot
@@ -107,19 +108,18 @@ class ScrimConfig(commands.GroupCog, group_name="scrimconfig"):
     @app_commands.describe(command="The command to run, e.g. changelevel de_mirage")
     async def rcon_cmd(self, interaction: discord.Interaction, command: str) -> None:
         config = await self.bot.db.get_config(interaction.guild_id)
-        if not config or not config["server_host"] or not config["rcon_password"]:
+        srv = server_settings(config)
+        if not srv or not srv["rcon_password"]:
             await interaction.response.send_message(
-                "No RCON access configured — set it with `/scrimconfig server`.",
+                "No RCON access configured — set it with `/scrimconfig server` "
+                "or the SERVER_HOST/RCON_PASSWORD environment variables.",
                 ephemeral=True,
             )
             return
         await interaction.response.defer(ephemeral=True)
         try:
             output = await rcon.run_command(
-                config["server_host"],
-                config["server_port"] or 27015,
-                config["rcon_password"],
-                command,
+                srv["host"], srv["port"], srv["rcon_password"], command
             )
         except rcon.RconError as e:
             await interaction.followup.send(f"⚠️ RCON error: {e}", ephemeral=True)
@@ -141,19 +141,19 @@ class ScrimConfig(commands.GroupCog, group_name="scrimconfig"):
             )
             role = f"<@&{config['scrim_role_id']}>" if config["scrim_role_id"] else "*none*"
             max_scrims = config["max_open_scrims"]
-            if config["server_host"]:
-                server = f"`{config['server_host']}:{config['server_port'] or 27015}`"
-                server += " 🔒" if config["server_password"] else ""
-                server += " · RCON ✅" if config["rcon_password"] else " · RCON ✖️"
-            else:
-                server = "*not set — use `/scrimconfig server`*"
         else:
             announce, role, max_scrims = (
                 "*channel where `/scrim create` is used*",
                 "*none*",
                 5,
             )
-            server = "*not set — use `/scrimconfig server`*"
+        srv = server_settings(config)
+        if srv:
+            server = f"`{srv['host']}:{srv['port']}`"
+            server += " 🔒" if srv["password"] else ""
+            server += " · RCON ✅" if srv["rcon_password"] else " · RCON ✖️"
+        else:
+            server = "*not set — use `/scrimconfig server` or SERVER_HOST env var*"
         embed.add_field(name="CS2 server", value=server, inline=False)
         embed.add_field(name="Announcement channel", value=announce, inline=False)
         embed.add_field(name="Ping role", value=role, inline=False)

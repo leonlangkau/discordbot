@@ -76,9 +76,24 @@ cogs/stats.py   # /stats and /leaderboard
 cogs/admin.py   # /scrimconfig admin commands (server, rcon, channels, limits)
 ```
 
+## Configuration via environment variables
+
+Every secret can be supplied as a plain environment variable — ideal for hosting panels (bot-hosting.net, Railway, Docker, …) where you set secrets in the dashboard instead of files. A `.env` file works too, but is optional.
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `DISCORD_TOKEN` | yes | Bot token |
+| `GUILD_ID` | no | Sync slash commands instantly to one server |
+| `SERVER_HOST` | no | Default CS2 server IP/hostname |
+| `SERVER_PORT` | no | Default CS2 server port (default 27015) |
+| `SERVER_PASSWORD` | no | Default join password (`sv_password`) |
+| `RCON_PASSWORD` | no | Default RCON password |
+
+Anything set per guild with `/scrimconfig server` overrides the environment defaults for that guild.
+
 ## Wiring up your CS2 server
 
-On your VPS, make sure RCON is enabled in your server config (`rcon_password "..."` in `server.cfg`, and the RCON port — same as the game port — reachable from wherever the bot runs). Then in Discord:
+On your VPS, make sure RCON is enabled in your server config (`rcon_password "..."` in `server.cfg`, and the RCON port — same as the game port — reachable over TCP from wherever the bot runs). Then either set the `SERVER_*`/`RCON_PASSWORD` environment variables above, or configure it in Discord:
 
 ```
 /scrimconfig server host:1.2.3.4 port:27015 password:scrimpw rcon_password:yourrconpw
