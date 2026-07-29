@@ -51,7 +51,12 @@ class ScrimBot(commands.Bot):
         await self.db.connect()
         for cog in COGS:
             await self.load_extension(cog)
-        self.web_runner = await start_panel(self)
+        # A panel failure (bad port, bind error) must never take the bot down.
+        try:
+            self.web_runner = await start_panel(self)
+        except Exception:
+            log.exception("Web admin panel failed to start; continuing without it.")
+            self.web_runner = None
 
         guild_id = os.getenv("GUILD_ID")
         if guild_id:
