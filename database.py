@@ -50,6 +50,17 @@ CREATE TABLE IF NOT EXISTS guild_config (
 );
 """
 
+# Columns added after the initial release; applied via ALTER TABLE on connect.
+MIGRATIONS: dict[str, dict[str, str]] = {
+    "scrims": {"map": "TEXT"},
+    "guild_config": {
+        "server_host": "TEXT",
+        "server_port": "INTEGER",
+        "server_password": "TEXT",
+        "rcon_password": "TEXT",
+    },
+}
+
 
 class Database:
     def __init__(self, path: str = DB_PATH) -> None:
@@ -61,6 +72,14 @@ class Database:
         self._conn.row_factory = aiosqlite.Row
         await self._conn.execute("PRAGMA foreign_keys = ON")
         await self._conn.executescript(SCHEMA)
+        for table, columns in MIGRATIONS.items():
+            cur = await self._conn.execute(f"PRAGMA table_info({table})")
+            existing = {row["name"] for row in await cur.fetchall()}
+            for name, decl in columns.items():
+                if name not in existing:
+                    await self._conn.execute(
+                        f'ALTER TABLE {table} ADD COLUMN "{name}" {decl}'
+                    )
         await self._conn.commit()
 
     async def close(self) -> None:

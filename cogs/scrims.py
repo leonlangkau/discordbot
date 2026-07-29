@@ -10,21 +10,37 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+import rcon
+
 if TYPE_CHECKING:
     from bot import ScrimBot
 
 TEAM_NAMES = {"a": "Team A", "b": "Team B"}
 
-GAME_CHOICES = [
-    ("Valorant", "🎯"),
-    ("CS2", "💣"),
-    ("League of Legends", "⚔️"),
-    ("Rocket League", "🚗"),
-    ("Overwatch 2", "🛡️"),
-    ("Apex Legends", "🏔️"),
-    ("Fortnite", "🌪️"),
-    ("Call of Duty", "🪖"),
+GAME = "CS2"
+
+MAP_CHOICES = [
+    ("Mirage", "de_mirage"),
+    ("Dust II", "de_dust2"),
+    ("Inferno", "de_inferno"),
+    ("Nuke", "de_nuke"),
+    ("Ancient", "de_ancient"),
+    ("Anubis", "de_anubis"),
+    ("Overpass", "de_overpass"),
+    ("Vertigo", "de_vertigo"),
+    ("Train", "de_train"),
+    ("Office", "cs_office"),
 ]
+
+
+def connect_string(config) -> str | None:
+    if not config or not config["server_host"]:
+        return None
+    port = config["server_port"] or 27015
+    line = f"connect {config['server_host']}:{port}"
+    if config["server_password"]:
+        line += f"; password {config['server_password']}"
+    return line
 
 
 def utcnow_ts() -> int:
@@ -57,6 +73,7 @@ async def build_scrim_embed(bot: ScrimBot, scrim) -> discord.Embed:
         color=colors.get(scrim["status"], discord.Color.green()),
     )
     embed.add_field(name="Format", value=f"{size}v{size}", inline=True)
+    embed.add_field(name="Map", value=scrim["map"] or "*server default*", inline=True)
     embed.add_field(name="Status", value=scrim["status"].capitalize(), inline=True)
     embed.add_field(name="Host", value=f"<@{scrim['creator_id']}>", inline=True)
     if scrim["scheduled_for"]:
@@ -183,7 +200,7 @@ async def launch_scrim(
     guild: discord.Guild,
     host: discord.Member,
     fallback_channel: discord.abc.Messageable,
-    game: str,
+    map_name: str | None,
     team_size: int,
     in_hours: float | None,
 ) -> str:
@@ -199,11 +216,14 @@ async def launch_scrim(
 
     scheduled_for = str(utcnow_ts() + int(in_hours * 3600)) if in_hours else None
     scrim_id = await bot.db.create_scrim(
-        guild.id, host.id, game, team_size, scheduled_for
+        guild.id, host.id, GAME, team_size, scheduled_for
     )
+    if map_name:
+        await bot.db.update_scrim(scrim_id, map=map_name)
 
+    label = f"{GAME} ({map_name})" if map_name else GAME
     try:
-        category, lobby = await create_scrim_channels(guild, scrim_id, game, host)
+        category, lobby = await create_scrim_channels(guild, scrim_id, label, host)
     except discord.Forbidden:
         await bot.db.update_scrim(scrim_id, status="cancelled")
         return "❌ I need the **Manage Channels** permission to create scrim channels."
@@ -232,9 +252,10 @@ async def launch_scrim(
     await bot.db.update_scrim(scrim_id, announce_message_id=message.id)
 
     await lobby.send(
-        f"Welcome to **Scrim #{scrim_id} — {game}**! "
+        f"Welcome to **Scrim #{scrim_id} — {label}**! "
         f"Host: {host.mention}. Team channels are on the left; "
-        "they unlock for players as they join via the announcement buttons."
+        "they unlock for players as they join via the announcement buttons. "
+        "The server connect info drops here when the host starts the match."
     )
     return (
         f"✅ Scrim **#{scrim_id}** created — announcement posted in "
@@ -249,12 +270,33 @@ async def start_scrim(bot: ScrimBot, guild: discord.Guild, scrim) -> str:
     await bot.db.update_scrim(scrim["id"], status="live")
     await refresh_announcement(bot, scrim["id"])
 
+    config = await bot.db.get_config(guild.id)
+
+    # Switch the server to the picked map if RCON is configured.
+    if config and config["rcon_password"] and config["server_host"] and scrim["map"]:
+        try:
+            await rcon.run_command(
+                config["server_host"],
+                config["server_port"] or 27015,
+                config["rcon_password"],
+                f"changelevel {scrim['map']}",
+            )
+            note += f"\n🗺️ Server switched to `{scrim['map']}` via RCON."
+        except rcon.RconError as e:
+            note += f"\n⚠️ RCON map change failed: {e}"
+
     lobby = guild.get_channel(scrim["lobby_channel_id"])
     if lobby:
         mentions = " ".join(f"<@{p['user_id']}>" for p in players)
+        connect = connect_string(config)
+        connect_line = (
+            f"\n🖥️ Connect to the server:\n```\n{connect}\n```"
+            if connect
+            else "\n⚠️ No server configured — an admin can set it with `/scrimconfig server`."
+        )
         await lobby.send(
             f"🏁 **Scrim #{scrim['id']} is LIVE!** {mentions}\n"
-            f"Hop into your team voice channels. GLHF!{note}"
+            f"Hop into your team voice channels. GLHF!{connect_line}{note}"
         )
     return f"🏁 Scrim #{scrim['id']} is now **live**!{note}"
 
@@ -602,6 +644,51 @@ class CancelButton(
         await interaction.followup.send(result, ephemeral=True)
 
 
+class ConnectButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"scrim:connect:(?P<id>\d+)",
+):
+    def __init__(self, scrim_id: int) -> None:
+        self.scrim_id = scrim_id
+        super().__init__(
+            discord.ui.Button(
+                label="Connect Info",
+                emoji="🖥️",
+                style=discord.ButtonStyle.secondary,
+                custom_id=f"scrim:connect:{scrim_id}",
+                row=0,
+            )
+        )
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match: re.Match):
+        return cls(int(match["id"]))
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        bot: ScrimBot = interaction.client
+        scrim = await bot.db.get_scrim(self.scrim_id)
+        if not scrim:
+            await interaction.response.send_message("Scrim not found.", ephemeral=True)
+            return
+        players = await bot.db.get_players(self.scrim_id)
+        in_scrim = any(p["user_id"] == interaction.user.id for p in players)
+        if not (in_scrim or is_host_or_mod(interaction.user, scrim)):
+            await interaction.response.send_message(
+                "Join the scrim to get the server connect info.", ephemeral=True
+            )
+            return
+        connect = connect_string(await bot.db.get_config(interaction.guild_id))
+        if not connect:
+            await interaction.response.send_message(
+                "No server configured — an admin can set it with `/scrimconfig server`.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(
+            f"Paste this into your console:\n```\n{connect}\n```", ephemeral=True
+        )
+
+
 class OpenScrimView(discord.ui.View):
     """Announcement buttons while a scrim is open: player row + host row."""
 
@@ -621,6 +708,7 @@ class LiveScrimView(discord.ui.View):
 
     def __init__(self, scrim_id: int) -> None:
         super().__init__(timeout=None)
+        self.add_item(ConnectButton(scrim_id))
         self.add_item(ReportButton(scrim_id))
         self.add_item(CancelButton(scrim_id))
 
@@ -630,24 +718,6 @@ class LiveScrimView(discord.ui.View):
 # ---------------------------------------------------------------------------
 
 
-class CustomGameModal(discord.ui.Modal, title="Custom game"):
-    game_name = discord.ui.TextInput(
-        label="Game name", placeholder="e.g. Trackmania", max_length=60
-    )
-
-    def __init__(self, wizard: ScrimWizard) -> None:
-        super().__init__()
-        self.wizard = wizard
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        self.wizard.game = str(self.game_name.value).strip()
-        self.wizard.game_select.placeholder = f"Game: {self.wizard.game}"
-        try:
-            await interaction.response.edit_message(view=self.wizard)
-        except discord.HTTPException:
-            await interaction.response.defer()
-
-
 class ScrimWizard(discord.ui.View):
     """Ephemeral step-by-step scrim creator driven entirely by selects/buttons."""
 
@@ -655,7 +725,7 @@ class ScrimWizard(discord.ui.View):
         super().__init__(timeout=600)
         self.bot = bot
         self.user_id = user_id
-        self.game: str | None = None
+        self.map_name: str | None = None
         self.team_size: int | None = None
         self.in_hours: float | None = None
 
@@ -672,41 +742,32 @@ class ScrimWizard(discord.ui.View):
     @staticmethod
     def make_embed() -> discord.Embed:
         embed = discord.Embed(
-            title="🛠️ Create a scrim",
+            title="🛠️ Create a CS2 scrim",
             description=(
-                "1️⃣ Pick the **game**\n"
+                "1️⃣ Pick the **map** (or leave it — server default)\n"
                 "2️⃣ Pick the **team size**\n"
                 "3️⃣ Optionally pick a **start time**\n\n"
                 "Then hit **✅ Create** — I'll set up private lobby, team text, "
-                "and voice channels, and post a sign-up announcement."
+                "and voice channels, and post a sign-up announcement. The server "
+                "connect info drops when the host starts the match."
             ),
             color=discord.Color.green(),
         )
         return embed
 
     @discord.ui.select(
-        placeholder="🎮 Choose a game…",
+        placeholder="🗺️ Choose a map (optional)…",
         row=0,
         options=[
-            *[
-                discord.SelectOption(label=name, value=name, emoji=emoji)
-                for name, emoji in GAME_CHOICES
-            ],
-            discord.SelectOption(
-                label="Custom…", value="__custom__", emoji="✏️",
-                description="Type any game name",
-            ),
+            discord.SelectOption(label=label, value=value, description=value)
+            for label, value in MAP_CHOICES
         ],
     )
-    async def game_select(
+    async def map_select(
         self, interaction: discord.Interaction, select: discord.ui.Select
     ) -> None:
-        choice = select.values[0]
-        if choice == "__custom__":
-            await interaction.response.send_modal(CustomGameModal(self))
-            return
-        self.game = choice
-        select.placeholder = f"Game: {choice}"
+        self.map_name = select.values[0]
+        select.placeholder = f"Map: {self.map_name}"
         await interaction.response.edit_message(view=self)
 
     @discord.ui.select(
@@ -750,9 +811,9 @@ class ScrimWizard(discord.ui.View):
     async def create_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        if self.game is None or self.team_size is None:
+        if self.team_size is None:
             await interaction.response.send_message(
-                "Pick a **game** and a **team size** first.", ephemeral=True
+                "Pick a **team size** first.", ephemeral=True
             )
             return
         await interaction.response.edit_message(
@@ -764,7 +825,7 @@ class ScrimWizard(discord.ui.View):
             interaction.guild,
             interaction.user,
             interaction.channel,
-            self.game,
+            self.map_name,
             self.team_size,
             self.in_hours,
         )
@@ -830,6 +891,7 @@ class Scrims(commands.Cog):
             StartButton,
             ReportButton,
             CancelButton,
+            ConnectButton,
             PanelButton,
         )
 
@@ -842,13 +904,15 @@ class Scrims(commands.Cog):
     @app_commands.default_permissions(manage_guild=True)
     async def panel(self, interaction: discord.Interaction) -> None:
         embed = discord.Embed(
-            title="🎮 Scrim Hub",
+            title="💣 CS2 Scrim Hub",
             description=(
-                "Ready to run a practice match?\n\n"
+                "Ready to run a match on our server?\n\n"
                 "Hit **Create Scrim** below and a step-by-step wizard walks you "
-                "through picking the game, team size, and start time. The bot then "
+                "through picking the map, team size, and start time. The bot then "
                 "creates private lobby, team text, and voice channels, and posts a "
-                "sign-up announcement where players join with one click."
+                "sign-up announcement where players join with one click.\n\n"
+                "When the host hits **Start Match**, the server connect info is "
+                "posted in the scrim lobby and the map is loaded automatically."
             ),
             color=discord.Color.green(),
         )

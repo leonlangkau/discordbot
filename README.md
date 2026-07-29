@@ -1,11 +1,11 @@
-# Scrim Bot
+# CS2 Scrim Bot
 
-A Discord bot that creates and manages **scrim servers** — private match lobbies with their own team channels, right inside your Discord server.
+A Discord bot that runs **CS2 scrims on your own server** — it creates private match lobbies with their own team channels in Discord, and hooks into your CS2 dedicated server (e.g. your HvH VPS) via RCON.
 
-When someone runs `/scrim create`, the bot spins up a dedicated category containing:
+When someone creates a scrim, the bot spins up a dedicated category containing:
 
 ```
-🎮 Scrim #1 — Valorant
+🎮 Scrim #1 — CS2 (de_mirage)
 ├── #lobby          (shared text channel)
 ├── #team-a         (team text channel)
 ├── #team-b         (team text channel)
@@ -18,8 +18,10 @@ The channels are private — only players who join the scrim (via buttons on the
 
 ## Features — fully button-driven GUI
 
-- **`/scrim panel`** — post a persistent **Scrim Hub** embed with a `🎮 Create Scrim` button
-- **Creation wizard** — clicking Create Scrim (or `/scrim create`) opens a private embed with dropdowns: pick the **game** (presets + custom via popup), **team size** (1v1–10v10), and **start time**, then hit ✅ Create
+- **`/scrim panel`** — post a persistent **CS2 Scrim Hub** embed with a `🎮 Create Scrim` button
+- **Creation wizard** — clicking Create Scrim (or `/scrim create`) opens a private embed with dropdowns: pick the **map** (Mirage, Dust II, Inferno, …), **team size** (1v1–10v10), and **start time**, then hit ✅ Create
+- **Your server, wired in** — configure your CS2 server once with `/scrimconfig server`; when a match starts the bot posts the `connect ip:port; password …` line in the private lobby, and if RCON is configured it switches the server to the picked map automatically
+- **🖥️ Connect Info button** on live scrims (players only) and **`/scrimconfig rcon`** to run any RCON command from Discord
 - **Join / Ready / Leave buttons** on the announcement embed, with live-updating rosters (all buttons survive bot restarts)
 - **Host controls on the embed** — 🏁 Start Match, 🏆 Report Score (popup form for the scores), 🗑️ Cancel; visible to everyone but only usable by the host or moderators
 - Score reporting records stats and automatically deletes the scrim channels
@@ -57,6 +59,8 @@ Set `GUILD_ID` in `.env` to your server's ID during development so slash command
 | `/scrim kick <scrim_id> <player>` | host/mod | Remove a player |
 | `/stats [player]` | anyone | Show a player's record |
 | `/leaderboard` | anyone | Top players by wins |
+| `/scrimconfig server <host> [port] [password] [rcon_password]` | admins | Point the bot at your CS2 server |
+| `/scrimconfig rcon <command>` | admins | Run an RCON command on the server |
 | `/scrimconfig …` | admins | Announcement channel, ping role, scrim limit |
 
 Starting, reporting, and cancelling scrims all happen through the buttons on the scrim's announcement embed — no IDs to type.
@@ -66,7 +70,19 @@ Starting, reporting, and cancelling scrims all happen through the buttons on the
 ```
 bot.py          # entry point, command sync, cog loading
 database.py     # aiosqlite persistence (scrims, players, stats, config)
+rcon.py         # minimal async Source RCON client (no extra deps)
 cogs/scrims.py  # scrim lifecycle, channel creation, join/ready buttons
 cogs/stats.py   # /stats and /leaderboard
-cogs/admin.py   # /scrimconfig admin commands
+cogs/admin.py   # /scrimconfig admin commands (server, rcon, channels, limits)
 ```
+
+## Wiring up your CS2 server
+
+On your VPS, make sure RCON is enabled in your server config (`rcon_password "..."` in `server.cfg`, and the RCON port — same as the game port — reachable from wherever the bot runs). Then in Discord:
+
+```
+/scrimconfig server host:1.2.3.4 port:27015 password:scrimpw rcon_password:yourrconpw
+```
+
+The bot verifies the RCON connection immediately. From then on, starting a scrim auto-loads the picked map, and players get the connect line in their private lobby (only scrim participants can see it).
+

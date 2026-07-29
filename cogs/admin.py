@@ -8,6 +8,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+import rcon
+
 if TYPE_CHECKING:
     from bot import ScrimBot
 
@@ -60,6 +62,73 @@ class ScrimConfig(commands.GroupCog, group_name="scrimconfig"):
             f"This server can now have up to **{limit}** active scrims."
         )
 
+    @app_commands.command(
+        name="server",
+        description="Set the CS2 server players connect to (and optional RCON access)",
+    )
+    @app_commands.describe(
+        host="Server IP or hostname",
+        port="Server port (default 27015)",
+        password="Server join password (sv_password), if any",
+        rcon_password="RCON password — enables auto map change and /scrimconfig rcon",
+    )
+    async def server(
+        self,
+        interaction: discord.Interaction,
+        host: str,
+        port: app_commands.Range[int, 1, 65535] = 27015,
+        password: str | None = None,
+        rcon_password: str | None = None,
+    ) -> None:
+        await self.bot.db.set_config(
+            interaction.guild_id,
+            server_host=host.strip(),
+            server_port=port,
+            server_password=password,
+            rcon_password=rcon_password,
+        )
+        rcon_note = ""
+        if rcon_password:
+            try:
+                await rcon.run_command(host.strip(), port, rcon_password, "echo scrimbot")
+                rcon_note = " RCON connection verified ✅"
+            except rcon.RconError as e:
+                rcon_note = f" ⚠️ RCON check failed: {e}"
+        await interaction.response.send_message(
+            f"Server set to `{host.strip()}:{port}`"
+            + (" with a join password" if password else "")
+            + f".{rcon_note}",
+            ephemeral=True,
+        )
+
+    @app_commands.command(
+        name="rcon", description="Run an RCON command on the configured CS2 server"
+    )
+    @app_commands.describe(command="The command to run, e.g. changelevel de_mirage")
+    async def rcon_cmd(self, interaction: discord.Interaction, command: str) -> None:
+        config = await self.bot.db.get_config(interaction.guild_id)
+        if not config or not config["server_host"] or not config["rcon_password"]:
+            await interaction.response.send_message(
+                "No RCON access configured — set it with `/scrimconfig server`.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            output = await rcon.run_command(
+                config["server_host"],
+                config["server_port"] or 27015,
+                config["rcon_password"],
+                command,
+            )
+        except rcon.RconError as e:
+            await interaction.followup.send(f"⚠️ RCON error: {e}", ephemeral=True)
+            return
+        output = output.strip() or "(no output)"
+        if len(output) > 1900:
+            output = output[:1900] + "…"
+        await interaction.followup.send(f"```\n{output}\n```", ephemeral=True)
+
     @app_commands.command(name="show", description="Show the current scrim configuration")
     async def show(self, interaction: discord.Interaction) -> None:
         config = await self.bot.db.get_config(interaction.guild_id)
@@ -72,12 +141,20 @@ class ScrimConfig(commands.GroupCog, group_name="scrimconfig"):
             )
             role = f"<@&{config['scrim_role_id']}>" if config["scrim_role_id"] else "*none*"
             max_scrims = config["max_open_scrims"]
+            if config["server_host"]:
+                server = f"`{config['server_host']}:{config['server_port'] or 27015}`"
+                server += " 🔒" if config["server_password"] else ""
+                server += " · RCON ✅" if config["rcon_password"] else " · RCON ✖️"
+            else:
+                server = "*not set — use `/scrimconfig server`*"
         else:
             announce, role, max_scrims = (
                 "*channel where `/scrim create` is used*",
                 "*none*",
                 5,
             )
+            server = "*not set — use `/scrimconfig server`*"
+        embed.add_field(name="CS2 server", value=server, inline=False)
         embed.add_field(name="Announcement channel", value=announce, inline=False)
         embed.add_field(name="Ping role", value=role, inline=False)
         embed.add_field(name="Max active scrims", value=str(max_scrims), inline=False)
