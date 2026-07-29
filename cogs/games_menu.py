@@ -45,6 +45,9 @@ ITEMS: dict[str, tuple[str, str, int]] = {
 
 MYSTERY_ITEMS = ["hotdog", "beer", "copium", "fish", "rare_pepe", "awp"]
 
+# Short button labels so five games fit on one row in the .g menu.
+SHORT_LABELS = {"rps": "RPS", "blackjack": "BJ", "coinflip": "Flip"}
+
 
 def item_emoji(guild: discord.Guild | None, key: str, fallback: str) -> str:
     """Use a custom server emoji named after the item key when available."""
@@ -157,12 +160,14 @@ class NumberModal(discord.ui.Modal, title="Roulette number"):
 class BetPanel(discord.ui.View):
     """The betting window: adjust the bet with buttons, then ▶ Play."""
 
-    def __init__(self, bot: ScrimBot, guild: discord.Guild, user_id: int, game: str) -> None:
+    def __init__(self, bot: ScrimBot, guild: discord.Guild, user_id: int, game: str,
+                 parent: "GamesMenu | None" = None) -> None:
         super().__init__(timeout=600)
         self.bot = bot
         self.guild = guild
         self.user_id = user_id
         self.game = game
+        self.parent = parent  # the .g menu this was opened from, if any
         self.bet = 100
         self.balance = 0
         self.number: int | None = None
@@ -173,9 +178,10 @@ class BetPanel(discord.ui.View):
 
     @classmethod
     async def create(
-        cls, bot: ScrimBot, guild: discord.Guild, user_id: int, game: str
+        cls, bot: ScrimBot, guild: discord.Guild, user_id: int, game: str,
+        parent: "GamesMenu | None" = None,
     ) -> "BetPanel":
-        panel = cls(bot, guild, user_id, game)
+        panel = cls(bot, guild, user_id, game, parent)
         econ = await bot.db.get_econ(guild.id, user_id)
         panel.balance = econ["balance"]
         panel.bet = min(100, max(10, panel.balance))
@@ -286,11 +292,17 @@ class BetPanel(discord.ui.View):
 
         play = discord.ui.Button(label="▶  P L A Y", style=discord.ButtonStyle.success, row=2)
         play.callback = self.play
-        close = discord.ui.Button(label="Close", emoji="✖️",
-                                  style=discord.ButtonStyle.secondary, row=2)
-        close.callback = self.close
         self.add_item(play)
-        self.add_item(close)
+        if self.parent is not None:  # opened from .g — offer a way back
+            back = discord.ui.Button(label="Menu", emoji="↩️",
+                                     style=discord.ButtonStyle.secondary, row=2)
+            back.callback = self.back_to_menu
+            self.add_item(back)
+        else:
+            close = discord.ui.Button(label="Close", emoji="✖️",
+                                      style=discord.ButtonStyle.secondary, row=2)
+            close.callback = self.close
+            self.add_item(close)
 
     # ---- button actions ----------------------------------------------------
 
@@ -332,6 +344,14 @@ class BetPanel(discord.ui.View):
     async def cancel_allin(self, interaction: discord.Interaction) -> None:
         self.confirming = False
         await self.render(interaction)
+
+    async def back_to_menu(self, interaction: discord.Interaction) -> None:
+        self.stop()
+        menu = self.parent
+        menu.show_main()
+        await interaction.response.edit_message(
+            embed=menu.main_embed(), attachments=[], view=menu
+        )
 
     async def close(self, interaction: discord.Interaction) -> None:
         self.stop()
@@ -409,8 +429,13 @@ class GamesMenu(discord.ui.View):
 
     def game_button(self, game: str):
         async def callback(interaction: discord.Interaction) -> None:
-            panel = await BetPanel.create(self.bot, self.guild, self.user_id, game)
-            await interaction.response.send_message(embed=panel.embed(), view=panel)
+            # Open the betting window in this same message, with a way back.
+            panel = await BetPanel.create(
+                self.bot, self.guild, self.user_id, game, parent=self
+            )
+            await interaction.response.edit_message(
+                embed=panel.embed(), attachments=[], view=panel
+            )
         return callback
 
     def cog_button(self, cog_name: str, command: str, *extra_args):
@@ -425,27 +450,13 @@ class GamesMenu(discord.ui.View):
         return discord.Embed(
             title="🕹️ Game Menu",
             description=(
-                "Pick a category — every game opens a betting window, "
+                "**Press a game to play it** — a betting window opens right here, "
                 "no commands to type.\n\n"
-                "🎰 **Casino** — slots, plinko, mines, tower…\n"
-                "🃏 **Table games** — blackjack, baccarat, roulette\n"
-                "💰 **Economy** — daily, work, balance\n"
-                "🛒 **Item shop** — pepes, lambos and *the* 🍆\n"
-                "📈 **Stats** — profile, leaderboards, history"
+                "🎰 Slots · 🪙 Coinflip · 🎲 Dice · ✊ RPS · 🔻 Plinko\n"
+                "💣 Mines · 🗼 Tower · 🃏 Blackjack · 🎴 Baccarat · 🎡 Roulette\n\n"
+                "💰 **Economy** · 🛒 **Item Shop** · 📈 **Stats** · 🎒 **Inventory**"
             ),
             color=discord.Color.green(),
-        )
-
-    def casino_embed(self) -> discord.Embed:
-        return discord.Embed(
-            title="🎰 Casino", description="Pick a game — a betting window opens.",
-            color=discord.Color.dark_teal(),
-        )
-
-    def table_embed(self) -> discord.Embed:
-        return discord.Embed(
-            title="🃏 Table Games", description="Pick a game — a betting window opens.",
-            color=discord.Color.dark_green(),
         )
 
     def economy_embed(self) -> discord.Embed:
@@ -472,40 +483,28 @@ class GamesMenu(discord.ui.View):
 
     # ---- layers ------------------------------------------------------------
 
+    # Every game is one press away on the front screen: two rows of five.
+    MAIN_ROW_ONE = ["slots", "coinflip", "dice", "rps", "plinko"]
+    MAIN_ROW_TWO = ["mines", "tower", "blackjack", "baccarat", "roulette"]
+
     def show_main(self) -> None:
         self.clear_items()
-        self.button("Casino", discord.ButtonStyle.success,
-                    self.nav(self.show_casino, self.casino_embed), 0, "🎰")
-        self.button("Table Games", discord.ButtonStyle.success,
-                    self.nav(self.show_table, self.table_embed), 0, "🃏")
+        for row, games in ((0, self.MAIN_ROW_ONE), (1, self.MAIN_ROW_TWO)):
+            for game in games:
+                emoji, title, *_ = GAME_META[game]
+                self.button(SHORT_LABELS.get(game, title), discord.ButtonStyle.success,
+                            self.game_button(game), row, emoji)
         self.button("Economy", discord.ButtonStyle.primary,
-                    self.nav(self.show_economy, self.economy_embed), 1, "💰")
+                    self.nav(self.show_economy, self.economy_embed), 2, "💰")
         self.button("Item Shop", discord.ButtonStyle.primary,
-                    self.nav(self.show_shop, self.shop_embed), 1, "🛒")
+                    self.nav(self.show_shop, self.shop_embed), 2, "🛒")
         self.button("Stats", discord.ButtonStyle.secondary,
-                    self.nav(self.show_stats, self.stats_embed), 1, "📈")
+                    self.nav(self.show_stats, self.stats_embed), 2, "📈")
+        self.button("Inventory", discord.ButtonStyle.secondary, self.show_inventory, 2, "🎒")
 
     def add_back(self, row=4) -> None:
         self.button("Back", discord.ButtonStyle.danger,
                     self.nav(self.show_main, self.main_embed), row, "↩️")
-
-    def show_casino(self) -> None:
-        self.clear_items()
-        self.button("Slots", discord.ButtonStyle.success, self.game_button("slots"), 0, "🎰")
-        self.button("Coinflip", discord.ButtonStyle.success, self.game_button("coinflip"), 0, "🪙")
-        self.button("Dice", discord.ButtonStyle.success, self.game_button("dice"), 0, "🎲")
-        self.button("RPS", discord.ButtonStyle.success, self.game_button("rps"), 0, "✊")
-        self.button("Plinko", discord.ButtonStyle.primary, self.game_button("plinko"), 1, "🔻")
-        self.button("Mines", discord.ButtonStyle.primary, self.game_button("mines"), 1, "💣")
-        self.button("Tower", discord.ButtonStyle.primary, self.game_button("tower"), 1, "🗼")
-        self.add_back()
-
-    def show_table(self) -> None:
-        self.clear_items()
-        self.button("Blackjack", discord.ButtonStyle.success, self.game_button("blackjack"), 0, "🃏")
-        self.button("Baccarat", discord.ButtonStyle.success, self.game_button("baccarat"), 0, "🎴")
-        self.button("Roulette", discord.ButtonStyle.success, self.game_button("roulette"), 0, "🎡")
-        self.add_back()
 
     def show_economy(self) -> None:
         self.clear_items()
