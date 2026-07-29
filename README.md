@@ -55,7 +55,7 @@ The channels are private — only players who join the scrim (via buttons on the
 
 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) and create an application.
 2. Under **Bot**, create a bot and copy its token.
-3. Enable the **Server Members Intent** (Bot → Privileged Gateway Intents).
+3. Enable the **Server Members Intent** and the **Message Content Intent** (Bot → Privileged Gateway Intents — message content is needed for the `.` prefix commands).
 4. Invite the bot with the **`bot`** and **`applications.commands`** scopes and these permissions: *Manage Channels, View Channels, Send Messages, Embed Links, Mention Everyone*.
 
 ### 2. Run the bot
@@ -70,6 +70,8 @@ python bot.py
 Set `GUILD_ID` in `.env` to your server's ID during development so slash commands appear instantly (global sync can take up to an hour).
 
 ## Commands
+
+Economy, casino, and stats commands work **both** as slash commands and with the classic `.` prefix: `.bj 100`, `.slots all`, `.daily`, `.cf 500 t`, `.roulette 100 17`, `.lb elo`, `.duel @user 1000`. Amounts accept `all` and `10k` shorthand. `.help` lists everything. Scrim GUI and admin/config commands are slash-only.
 
 | Command | Who | What it does |
 |---|---|---|

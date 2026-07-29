@@ -28,6 +28,7 @@ COGS = (
     "cogs.giveaways",
     "cogs.status",
     "cogs.security",
+    "cogs.prefix",
 )
 
 
@@ -35,7 +36,13 @@ class ScrimBot(commands.Bot):
     def __init__(self) -> None:
         intents = discord.Intents.default()
         intents.members = True
-        super().__init__(command_prefix="!", intents=intents)
+        intents.message_content = True  # for "." prefix commands
+        super().__init__(
+            command_prefix=commands.when_mentioned_or("."),
+            case_insensitive=True,
+            help_command=None,
+            intents=intents,
+        )
         self.db = Database()
 
     async def setup_hook(self) -> None:

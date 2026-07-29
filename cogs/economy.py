@@ -199,6 +199,14 @@ class ShopView(discord.ui.View):
         super().__init__(timeout=300)
         self.bot = bot
         self.user_id = user_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "Open your own shop with `.shop` or `/shop`.", ephemeral=True
+            )
+            return False
+        return True
         select = discord.ui.Select(placeholder="Buy an item…", options=options[:25])
         select.callback = self.buy
         self.select = select

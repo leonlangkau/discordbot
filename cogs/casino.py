@@ -82,7 +82,21 @@ def result_line(delta: int) -> str:
 # ---------------------------------------------------------------------------
 
 
-class BlackjackView(discord.ui.View):
+class OwnedGameView(discord.ui.View):
+    """A game view only its owner may interact with."""
+
+    user_id: int
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "Not your game — start your own!", ephemeral=True
+            )
+            return False
+        return True
+
+
+class BlackjackView(OwnedGameView):
     def __init__(self, bot: ScrimBot, guild_id: int, user_id: int, bet: int) -> None:
         super().__init__(timeout=180)
         self.bot = bot
@@ -165,7 +179,7 @@ class BlackjackView(discord.ui.View):
 # ---------------------------------------------------------------------------
 
 
-class MinesView(discord.ui.View):
+class MinesView(OwnedGameView):
     SIZE = 20  # 4 rows of 5 tiles; row 4 is the cashout row
 
     def __init__(
@@ -281,7 +295,7 @@ class MinesView(discord.ui.View):
 # ---------------------------------------------------------------------------
 
 
-class TowerView(discord.ui.View):
+class TowerView(OwnedGameView):
     FLOORS = 8
     STEP = 1.5 * 0.97  # one of three tiles is a bomb
 
