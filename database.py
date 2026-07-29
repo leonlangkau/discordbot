@@ -48,6 +48,57 @@ CREATE TABLE IF NOT EXISTS guild_config (
     announce_channel_id INTEGER,
     max_open_scrims     INTEGER NOT NULL DEFAULT 5
 );
+
+CREATE TABLE IF NOT EXISTS economy (
+    guild_id   INTEGER NOT NULL,
+    user_id    INTEGER NOT NULL,
+    balance    INTEGER NOT NULL DEFAULT 0,
+    last_daily INTEGER NOT NULL DEFAULT 0,
+    last_work  INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (guild_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS scrim_bets (
+    scrim_id INTEGER NOT NULL,
+    user_id  INTEGER NOT NULL,
+    team     TEXT    NOT NULL,
+    amount   INTEGER NOT NULL,
+    PRIMARY KEY (scrim_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS shop_items (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id INTEGER NOT NULL,
+    name     TEXT    NOT NULL,
+    price    INTEGER NOT NULL,
+    role_id  INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS giveaways (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id   INTEGER NOT NULL,
+    channel_id INTEGER NOT NULL,
+    message_id INTEGER,
+    prize      TEXT    NOT NULL,
+    coins      INTEGER NOT NULL DEFAULT 0,
+    ends_at    INTEGER NOT NULL,
+    ended      INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS giveaway_entries (
+    giveaway_id INTEGER NOT NULL,
+    user_id     INTEGER NOT NULL,
+    PRIMARY KEY (giveaway_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS duels (
+    scrim_id      INTEGER PRIMARY KEY,
+    guild_id      INTEGER NOT NULL,
+    challenger_id INTEGER NOT NULL,
+    target_id     INTEGER NOT NULL,
+    wager         INTEGER NOT NULL,
+    settled       INTEGER NOT NULL DEFAULT 0
+);
 """
 
 # Columns added after the initial release; applied via ALTER TABLE on connect.
@@ -58,6 +109,12 @@ MIGRATIONS: dict[str, dict[str, str]] = {
         "server_port": "INTEGER",
         "server_password": "TEXT",
         "rcon_password": "TEXT",
+        "status_channel_id": "INTEGER",
+        "status_message_id": "INTEGER",
+    },
+    "player_stats": {
+        "elo": "INTEGER NOT NULL DEFAULT 1000",
+        "xp": "INTEGER NOT NULL DEFAULT 0",
     },
 }
 
@@ -202,7 +259,262 @@ class Database:
         )
         return await cur.fetchall()
 
+    # ---- economy ----------------------------------------------------------
+
+    async def _ensure_econ(self, guild_id: int, user_id: int) -> None:
+        await self.conn.execute(
+            "INSERT INTO economy (guild_id, user_id) VALUES (?, ?)"
+            " ON CONFLICT(guild_id, user_id) DO NOTHING",
+            (guild_id, user_id),
+        )
+
+    async def get_econ(self, guild_id: int, user_id: int) -> aiosqlite.Row:
+        await self._ensure_econ(guild_id, user_id)
+        await self.conn.commit()
+        cur = await self.conn.execute(
+            "SELECT * FROM economy WHERE guild_id = ? AND user_id = ?",
+            (guild_id, user_id),
+        )
+        return await cur.fetchone()
+
+    async def add_coins(self, guild_id: int, user_id: int, amount: int) -> None:
+        await self._ensure_econ(guild_id, user_id)
+        await self.conn.execute(
+            "UPDATE economy SET balance = balance + ? WHERE guild_id = ? AND user_id = ?",
+            (amount, guild_id, user_id),
+        )
+        await self.conn.commit()
+
+    async def try_spend(self, guild_id: int, user_id: int, amount: int) -> bool:
+        """Atomically deduct coins; False if the balance is insufficient."""
+        await self._ensure_econ(guild_id, user_id)
+        cur = await self.conn.execute(
+            "UPDATE economy SET balance = balance - ?"
+            " WHERE guild_id = ? AND user_id = ? AND balance >= ?",
+            (amount, guild_id, user_id, amount),
+        )
+        await self.conn.commit()
+        return cur.rowcount > 0
+
+    async def set_econ_time(self, guild_id: int, user_id: int, field: str, ts: int) -> None:
+        assert field in ("last_daily", "last_work")
+        await self.conn.execute(
+            f"UPDATE economy SET {field} = ? WHERE guild_id = ? AND user_id = ?",
+            (ts, guild_id, user_id),
+        )
+        await self.conn.commit()
+
+    async def coins_leaderboard(self, guild_id: int, limit: int = 10) -> list[aiosqlite.Row]:
+        cur = await self.conn.execute(
+            "SELECT * FROM economy WHERE guild_id = ? ORDER BY balance DESC LIMIT ?",
+            (guild_id, limit),
+        )
+        return await cur.fetchall()
+
+    # ---- scrim bets -------------------------------------------------------
+
+    async def place_bet(self, scrim_id: int, user_id: int, team: str, amount: int) -> bool:
+        try:
+            await self.conn.execute(
+                "INSERT INTO scrim_bets (scrim_id, user_id, team, amount) VALUES (?, ?, ?, ?)",
+                (scrim_id, user_id, team, amount),
+            )
+        except aiosqlite.IntegrityError:
+            return False
+        await self.conn.commit()
+        return True
+
+    async def get_bets(self, scrim_id: int) -> list[aiosqlite.Row]:
+        cur = await self.conn.execute(
+            "SELECT * FROM scrim_bets WHERE scrim_id = ?", (scrim_id,)
+        )
+        return await cur.fetchall()
+
+    async def clear_bets(self, scrim_id: int) -> None:
+        await self.conn.execute("DELETE FROM scrim_bets WHERE scrim_id = ?", (scrim_id,))
+        await self.conn.commit()
+
+    # ---- elo / xp ---------------------------------------------------------
+
+    async def _ensure_stats(self, guild_id: int, user_id: int) -> None:
+        await self.conn.execute(
+            "INSERT INTO player_stats (guild_id, user_id) VALUES (?, ?)"
+            " ON CONFLICT(guild_id, user_id) DO NOTHING",
+            (guild_id, user_id),
+        )
+
+    async def adjust_elo(self, guild_id: int, user_id: int, delta: int) -> None:
+        await self._ensure_stats(guild_id, user_id)
+        await self.conn.execute(
+            "UPDATE player_stats SET elo = MAX(0, elo + ?)"
+            " WHERE guild_id = ? AND user_id = ?",
+            (delta, guild_id, user_id),
+        )
+        await self.conn.commit()
+
+    async def add_xp(self, guild_id: int, user_id: int, amount: int) -> tuple[int, int]:
+        """Add XP; returns (old_xp, new_xp)."""
+        await self._ensure_stats(guild_id, user_id)
+        cur = await self.conn.execute(
+            "SELECT xp FROM player_stats WHERE guild_id = ? AND user_id = ?",
+            (guild_id, user_id),
+        )
+        old = (await cur.fetchone())["xp"]
+        await self.conn.execute(
+            "UPDATE player_stats SET xp = xp + ? WHERE guild_id = ? AND user_id = ?",
+            (amount, guild_id, user_id),
+        )
+        await self.conn.commit()
+        return old, old + amount
+
+    async def stats_leaderboard(
+        self, guild_id: int, column: str, limit: int = 10
+    ) -> list[aiosqlite.Row]:
+        assert column in ("wins", "elo", "xp")
+        cur = await self.conn.execute(
+            f"SELECT * FROM player_stats WHERE guild_id = ? ORDER BY {column} DESC LIMIT ?",
+            (guild_id, limit),
+        )
+        return await cur.fetchall()
+
+    async def match_history(
+        self, guild_id: int, user_id: int, limit: int = 10
+    ) -> list[aiosqlite.Row]:
+        cur = await self.conn.execute(
+            "SELECT s.*, p.team AS my_team FROM scrims s"
+            " JOIN scrim_players p ON p.scrim_id = s.id"
+            " WHERE s.guild_id = ? AND p.user_id = ? AND s.status = 'finished'"
+            " ORDER BY s.id DESC LIMIT ?",
+            (guild_id, user_id, limit),
+        )
+        return await cur.fetchall()
+
+    # ---- shop -------------------------------------------------------------
+
+    async def add_shop_item(
+        self, guild_id: int, name: str, price: int, role_id: int
+    ) -> int:
+        cur = await self.conn.execute(
+            "INSERT INTO shop_items (guild_id, name, price, role_id) VALUES (?, ?, ?, ?)",
+            (guild_id, name, price, role_id),
+        )
+        await self.conn.commit()
+        return cur.lastrowid
+
+    async def remove_shop_item(self, guild_id: int, item_id: int) -> bool:
+        cur = await self.conn.execute(
+            "DELETE FROM shop_items WHERE guild_id = ? AND id = ?", (guild_id, item_id)
+        )
+        await self.conn.commit()
+        return cur.rowcount > 0
+
+    async def get_shop_items(self, guild_id: int) -> list[aiosqlite.Row]:
+        cur = await self.conn.execute(
+            "SELECT * FROM shop_items WHERE guild_id = ? ORDER BY price", (guild_id,)
+        )
+        return await cur.fetchall()
+
+    async def get_shop_item(self, guild_id: int, item_id: int) -> aiosqlite.Row | None:
+        cur = await self.conn.execute(
+            "SELECT * FROM shop_items WHERE guild_id = ? AND id = ?", (guild_id, item_id)
+        )
+        return await cur.fetchone()
+
+    # ---- giveaways --------------------------------------------------------
+
+    async def create_giveaway(
+        self, guild_id: int, channel_id: int, prize: str, coins: int, ends_at: int
+    ) -> int:
+        cur = await self.conn.execute(
+            "INSERT INTO giveaways (guild_id, channel_id, prize, coins, ends_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (guild_id, channel_id, prize, coins, ends_at),
+        )
+        await self.conn.commit()
+        return cur.lastrowid
+
+    async def set_giveaway_message(self, giveaway_id: int, message_id: int) -> None:
+        await self.conn.execute(
+            "UPDATE giveaways SET message_id = ? WHERE id = ?", (message_id, giveaway_id)
+        )
+        await self.conn.commit()
+
+    async def get_giveaway(self, giveaway_id: int) -> aiosqlite.Row | None:
+        cur = await self.conn.execute(
+            "SELECT * FROM giveaways WHERE id = ?", (giveaway_id,)
+        )
+        return await cur.fetchone()
+
+    async def due_giveaways(self, now: int) -> list[aiosqlite.Row]:
+        cur = await self.conn.execute(
+            "SELECT * FROM giveaways WHERE ended = 0 AND ends_at <= ?", (now,)
+        )
+        return await cur.fetchall()
+
+    async def end_giveaway(self, giveaway_id: int) -> None:
+        await self.conn.execute(
+            "UPDATE giveaways SET ended = 1 WHERE id = ?", (giveaway_id,)
+        )
+        await self.conn.commit()
+
+    async def enter_giveaway(self, giveaway_id: int, user_id: int) -> bool:
+        try:
+            await self.conn.execute(
+                "INSERT INTO giveaway_entries (giveaway_id, user_id) VALUES (?, ?)",
+                (giveaway_id, user_id),
+            )
+        except aiosqlite.IntegrityError:
+            return False
+        await self.conn.commit()
+        return True
+
+    async def giveaway_entry_count(self, giveaway_id: int) -> int:
+        cur = await self.conn.execute(
+            "SELECT COUNT(*) AS n FROM giveaway_entries WHERE giveaway_id = ?",
+            (giveaway_id,),
+        )
+        return (await cur.fetchone())["n"]
+
+    async def random_giveaway_winner(self, giveaway_id: int) -> int | None:
+        cur = await self.conn.execute(
+            "SELECT user_id FROM giveaway_entries WHERE giveaway_id = ?"
+            " ORDER BY RANDOM() LIMIT 1",
+            (giveaway_id,),
+        )
+        row = await cur.fetchone()
+        return row["user_id"] if row else None
+
+    # ---- duels ------------------------------------------------------------
+
+    async def create_duel(
+        self, scrim_id: int, guild_id: int, challenger_id: int, target_id: int, wager: int
+    ) -> None:
+        await self.conn.execute(
+            "INSERT INTO duels (scrim_id, guild_id, challenger_id, target_id, wager)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (scrim_id, guild_id, challenger_id, target_id, wager),
+        )
+        await self.conn.commit()
+
+    async def get_duel(self, scrim_id: int) -> aiosqlite.Row | None:
+        cur = await self.conn.execute(
+            "SELECT * FROM duels WHERE scrim_id = ? AND settled = 0", (scrim_id,)
+        )
+        return await cur.fetchone()
+
+    async def settle_duel(self, scrim_id: int) -> None:
+        await self.conn.execute(
+            "UPDATE duels SET settled = 1 WHERE scrim_id = ?", (scrim_id,)
+        )
+        await self.conn.commit()
+
     # ---- config -----------------------------------------------------------
+
+    async def all_status_configs(self) -> list[aiosqlite.Row]:
+        cur = await self.conn.execute(
+            "SELECT * FROM guild_config WHERE status_channel_id IS NOT NULL"
+        )
+        return await cur.fetchall()
 
     async def get_config(self, guild_id: int) -> aiosqlite.Row | None:
         cur = await self.conn.execute(

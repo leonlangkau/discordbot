@@ -18,7 +18,16 @@ logging.basicConfig(
 )
 log = logging.getLogger("scrimbot")
 
-COGS = ("cogs.scrims", "cogs.stats", "cogs.admin")
+COGS = (
+    "cogs.scrims",
+    "cogs.stats",
+    "cogs.admin",
+    "cogs.economy",
+    "cogs.casino",
+    "cogs.duels",
+    "cogs.giveaways",
+    "cogs.status",
+)
 
 
 class ScrimBot(commands.Bot):

@@ -204,13 +204,13 @@ async def launch_scrim(
     map_name: str | None,
     team_size: int,
     in_hours: float | None,
-) -> str:
-    """Create a scrim end-to-end; returns a status message for the invoker."""
+) -> tuple[int | None, str]:
+    """Create a scrim end-to-end; returns (scrim_id, status message)."""
     config = await bot.db.get_config(guild.id)
     max_open = config["max_open_scrims"] if config else 5
     open_scrims = await bot.db.list_scrims(guild.id, ("open", "live"))
     if len(open_scrims) >= max_open:
-        return (
+        return None, (
             f"❌ This server already has {max_open} active scrims. "
             "Finish or cancel one first."
         )
@@ -227,7 +227,7 @@ async def launch_scrim(
         category, lobby = await create_scrim_channels(guild, scrim_id, label, host)
     except discord.Forbidden:
         await bot.db.update_scrim(scrim_id, status="cancelled")
-        return "❌ I need the **Manage Channels** permission to create scrim channels."
+        return None, "❌ I need the **Manage Channels** permission to create scrim channels."
 
     announce_channel = None
     if config and config["announce_channel_id"]:
@@ -258,7 +258,7 @@ async def launch_scrim(
         "they unlock for players as they join via the announcement buttons. "
         "The server connect info drops here when the host starts the match."
     )
-    return (
+    return scrim_id, (
         f"✅ Scrim **#{scrim_id}** created — announcement posted in "
         f"{announce_channel.mention}, private channels under **{category.name}**."
     )
@@ -323,25 +323,107 @@ async def finish_scrim(
         if p["team"] in outcomes:
             await bot.db.record_result(guild.id, p["user_id"], outcomes[p["team"]])
 
+    extra: list[str] = []
+    is_draw = team_a_score == team_b_score
+    winner_team = None if is_draw else ("a" if team_a_score > team_b_score else "b")
+
+    # Elo: team-average expected score, K=32, same delta for every player.
+    team_a_ids = [p["user_id"] for p in players if p["team"] == "a"]
+    team_b_ids = [p["user_id"] for p in players if p["team"] == "b"]
+    if team_a_ids and team_b_ids:
+
+        async def avg_elo(ids: list[int]) -> float:
+            total = 0
+            for uid in ids:
+                row = await bot.db.get_stats(guild.id, uid)
+                total += row["elo"] if row else 1000
+            return total / len(ids)
+
+        elo_a, elo_b = await avg_elo(team_a_ids), await avg_elo(team_b_ids)
+        score_a = 0.5 if is_draw else (1.0 if winner_team == "a" else 0.0)
+        expected_a = 1 / (1 + 10 ** ((elo_b - elo_a) / 400))
+        delta = round(32 * (score_a - expected_a))
+        for uid in team_a_ids:
+            await bot.db.adjust_elo(guild.id, uid, delta)
+        for uid in team_b_ids:
+            await bot.db.adjust_elo(guild.id, uid, -delta)
+        if delta:
+            extra.append(f"📈 Elo: Team A {delta:+d}, Team B {-delta:+d}.")
+
+    # Coins + XP for playing.
+    coin_reward = {"win": 100, "loss": 25, "draw": 50}
+    xp_reward = {"win": 100, "loss": 40, "draw": 60}
+    for p in players:
+        if p["team"] in outcomes:
+            outcome = outcomes[p["team"]]
+            await bot.db.add_coins(guild.id, p["user_id"], coin_reward[outcome])
+            await bot.db.add_xp(guild.id, p["user_id"], xp_reward[outcome])
+    if outcomes:
+        extra.append("🪙 Coins and XP paid out to all players.")
+
+    # Settle spectator bets: 2x on a win, refund on a draw.
+    bets = await bot.db.get_bets(scrim["id"])
+    if bets:
+        for bet in bets:
+            if is_draw:
+                await bot.db.add_coins(guild.id, bet["user_id"], bet["amount"])
+            elif bet["team"] == winner_team:
+                await bot.db.add_coins(guild.id, bet["user_id"], bet["amount"] * 2)
+        extra.append(
+            f"🎫 {len(bets)} bet(s) settled"
+            + (" (draw — all refunded)." if is_draw else ".")
+        )
+    await bot.db.clear_bets(scrim["id"])
+
+    # Settle a duel wager: winner takes the pot, draw refunds both.
+    duel = await bot.db.get_duel(scrim["id"])
+    if duel:
+        pot = duel["wager"] * 2
+        if is_draw:
+            await bot.db.add_coins(guild.id, duel["challenger_id"], duel["wager"])
+            await bot.db.add_coins(guild.id, duel["target_id"], duel["wager"])
+            extra.append("⚔️ Duel drawn — wagers refunded.")
+        else:
+            winner_id = (
+                duel["challenger_id"] if winner_team == "a" else duel["target_id"]
+            )
+            await bot.db.add_coins(guild.id, winner_id, pot)
+            extra.append(f"⚔️ <@{winner_id}> takes the **{pot:,}** coin duel pot!")
+        await bot.db.settle_duel(scrim["id"])
+
     await refresh_announcement(bot, scrim["id"])
     await cleanup_channels(bot, scrim)
 
     winner = (
         "It's a **draw**!"
-        if team_a_score == team_b_score
-        else f"**{'Team A' if team_a_score > team_b_score else 'Team B'} wins!**"
+        if is_draw
+        else f"**{'Team A' if winner_team == 'a' else 'Team B'} wins!**"
     )
+    lines = "\n".join(extra)
     return (
         f"🏆 Scrim #{scrim['id']} finished **{team_a_score} : {team_b_score}** — {winner} "
-        "Stats recorded and scrim channels cleaned up. GGs! 🎉"
+        f"GGs! 🎉\n{lines}"
     )
 
 
 async def cancel_scrim(bot: ScrimBot, scrim) -> str:
     await bot.db.update_scrim(scrim["id"], status="cancelled")
+    note = ""
+    bets = await bot.db.get_bets(scrim["id"])
+    for bet in bets:
+        await bot.db.add_coins(scrim["guild_id"], bet["user_id"], bet["amount"])
+    if bets:
+        note += f" {len(bets)} bet(s) refunded."
+    await bot.db.clear_bets(scrim["id"])
+    duel = await bot.db.get_duel(scrim["id"])
+    if duel:
+        await bot.db.add_coins(scrim["guild_id"], duel["challenger_id"], duel["wager"])
+        await bot.db.add_coins(scrim["guild_id"], duel["target_id"], duel["wager"])
+        await bot.db.settle_duel(scrim["id"])
+        note += " Duel wagers refunded."
     await refresh_announcement(bot, scrim["id"])
     await cleanup_channels(bot, scrim)
-    return f"🗑️ Scrim #{scrim['id']} cancelled and channels removed."
+    return f"🗑️ Scrim #{scrim['id']} cancelled and channels removed.{note}"
 
 
 # ---------------------------------------------------------------------------
@@ -822,7 +904,7 @@ class ScrimWizard(discord.ui.View):
             content="⏳ Setting up your scrim…", embed=None, view=None
         )
         self.stop()
-        result = await launch_scrim(
+        _, result = await launch_scrim(
             self.bot,
             interaction.guild,
             interaction.user,

@@ -25,9 +25,21 @@ The channels are private — only players who join the scrim (via buttons on the
 - **Join / Ready / Leave buttons** on the announcement embed, with live-updating rosters (all buttons survive bot restarts)
 - **Host controls on the embed** — 🏁 Start Match, 🏆 Report Score (popup form for the scores), 🗑️ Cancel; visible to everyone but only usable by the host or moderators
 - Score reporting records stats and automatically deletes the scrim channels
-- **`/stats`** and **`/leaderboard`** — per-server win/loss records
+- **`/stats`**, **`/leaderboard`**, **`/history`** — full profiles with W/L, Elo rank (Silver → Global Elite), XP level, and coins
 - **`/scrimconfig`** — admin settings: announcement channel, ping role, max concurrent scrims
-- SQLite persistence — scrims, rosters, stats, and config survive restarts
+- SQLite persistence — scrims, rosters, stats, economy, and config survive restarts
+
+## Economy & casino
+
+- **Coins** — `/balance`, `/daily` (250, 20h cooldown), `/work` (50–150, 1h), `/pay`; playing scrims pays coins and XP, winning pays more
+- **Elo** — team-based Elo (K=32) moves with every reported scrim; ranks from Silver to Global Elite
+- **XP & levels** — chat and scrims grant XP, with level-up announcements
+- **Casino** — `/coinflip`, `/dice`, `/rps`, `/slots`, `/roulette`, `/plinko`, `/blackjack` (hit/stand buttons), `/mines` (tile grid + cash out), `/tower` (climb 8 floors), `/baccarat` (full third-card rules)
+- **Scrim betting** — `/bet` on Team A/B while a scrim is open; pays 2x, refunded on draws and cancels; players can't bet on their own match
+- **Duels** — `/duel @user wager` creates a 1v1 scrim with both wagers escrowed; winner takes the pot on the reported score
+- **Shop** — `/shop` with a buy menu; admins stock roles via `/shopadmin add`, grant coins with `/shopadmin give`
+- **Giveaways** — `/giveaway` with a join button and automatic timed draw; coin prizes pay out automatically
+- **Server status** — `/statuschannel` posts an auto-updating embed (map, players, online state) polled from your CS2 server via RCON every 5 minutes
 
 ## Setup
 
@@ -62,6 +74,14 @@ Set `GUILD_ID` in `.env` to your server's ID during development so slash command
 | `/scrimconfig server <host> [port] [password] [rcon_password]` | admins | Point the bot at your CS2 server |
 | `/scrimconfig rcon <command>` | admins | Run an RCON command on the server |
 | `/scrimconfig …` | admins | Announcement channel, ping role, scrim limit |
+| `/balance` `/daily` `/work` `/pay` | anyone | Economy basics |
+| `/coinflip` `/dice` `/rps` `/slots` `/roulette` `/plinko` `/blackjack` `/mines` `/tower` `/baccarat` | anyone | Casino games |
+| `/bet <scrim_id> <team> <amount>` | anyone | Bet on an open scrim (2x) |
+| `/duel <opponent> <wager> [map]` | anyone | 1v1 for a coin pot |
+| `/history [player]` | anyone | Recent scrim results |
+| `/shop`, `/shopadmin …` | anyone / admins | Coin shop for roles |
+| `/giveaway <prize> <minutes> [coins]` | mods | Timed giveaway with join button |
+| `/statuschannel [channel]` | admins | Live CS2 server status embed |
 
 Starting, reporting, and cancelling scrims all happen through the buttons on the scrim's announcement embed — no IDs to type.
 
@@ -71,9 +91,14 @@ Starting, reporting, and cancelling scrims all happen through the buttons on the
 bot.py          # entry point, command sync, cog loading
 database.py     # aiosqlite persistence (scrims, players, stats, config)
 rcon.py         # minimal async Source RCON client (no extra deps)
-cogs/scrims.py  # scrim lifecycle, channel creation, join/ready buttons
-cogs/stats.py   # /stats and /leaderboard
-cogs/admin.py   # /scrimconfig admin commands (server, rcon, channels, limits)
+cogs/scrims.py    # scrim lifecycle, channel creation, join/ready buttons, payouts
+cogs/stats.py     # profiles, Elo ranks, XP levels, leaderboards, history
+cogs/economy.py   # coins, daily/work/pay, shop, scrim betting
+cogs/casino.py    # all ten casino games
+cogs/duels.py     # 1v1 wager duels
+cogs/giveaways.py # timed giveaways
+cogs/status.py    # live server status embed
+cogs/admin.py     # /scrimconfig admin commands (server, rcon, channels, limits)
 ```
 
 ## Configuration via environment variables
