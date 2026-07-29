@@ -9,6 +9,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 
 from database import Database
+from webpanel import start_panel
 
 load_dotenv()
 
@@ -44,11 +45,13 @@ class ScrimBot(commands.Bot):
             intents=intents,
         )
         self.db = Database()
+        self.web_runner = None
 
     async def setup_hook(self) -> None:
         await self.db.connect()
         for cog in COGS:
             await self.load_extension(cog)
+        self.web_runner = await start_panel(self)
 
         guild_id = os.getenv("GUILD_ID")
         if guild_id:
@@ -61,6 +64,8 @@ class ScrimBot(commands.Bot):
             log.info("Synced commands globally")
 
     async def close(self) -> None:
+        if self.web_runner is not None:
+            await self.web_runner.cleanup()
         await self.db.close()
         await super().close()
 

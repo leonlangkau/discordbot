@@ -22,10 +22,10 @@ if TYPE_CHECKING:
 
 # action -> (max actions, within seconds)
 THRESHOLDS = {
-    "channel_delete": (3, 60),
-    "role_delete": (3, 60),
-    "ban": (4, 60),
-    "kick": (4, 60),
+    "channel_delete": (10, 60),
+    "role_delete": (5, 60),
+    "ban": (7, 60),
+    "kick": (8, 60),
 }
 PUNISH_COOLDOWN = 300  # don't re-punish the same actor for 5 minutes
 

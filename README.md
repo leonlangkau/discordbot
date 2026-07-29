@@ -49,6 +49,18 @@ The channels are private — only players who join the scrim (via buttons on the
 - `/security status` shows the full configuration
 - Needs extra bot permissions: **View Audit Log** and **Ban Members** for full protection
 
+## Web admin panel
+
+A password-protected browser dashboard runs from inside the bot. Set `PANEL_PASSWORD` to enable it (it refuses to start without one) and `WEB_PORT` to your host's allocated port. On bot-hosting.net that's the address shown on your server — e.g. `fi15.bot-hosting.net:26152`, so set `WEB_PORT=26152`.
+
+From the panel you can:
+- See an overview: servers, members, active scrims, uptime
+- Per server: view top coin balances and active scrims
+- **Grant or take coins** from any user (by ID)
+- **Toggle anti-nuke** on/off
+
+Security: cookie sessions with a 12h expiry, per-session CSRF tokens on every action, login rate-limiting, and it never starts unauthenticated. Use a strong `PANEL_PASSWORD` — anyone with it can adjust coins.
+
 ## Setup
 
 ### 1. Create the Discord application
@@ -109,6 +121,9 @@ cogs/duels.py     # 1v1 wager duels
 cogs/giveaways.py # timed giveaways
 cogs/status.py    # live server status embed
 cogs/admin.py     # /scrimconfig admin commands (server, rcon, channels, limits)
+cogs/security.py  # join/leave logging + anti-nuke
+cogs/prefix.py    # classic "." text commands
+webpanel.py       # password-protected web admin panel
 ```
 
 ## Configuration via environment variables
@@ -123,6 +138,9 @@ Every secret can be supplied as a plain environment variable — ideal for hosti
 | `SERVER_PORT` | no | Default CS2 server port (default 27015) |
 | `SERVER_PASSWORD` | no | Default join password (`sv_password`) |
 | `RCON_PASSWORD` | no | Default RCON password |
+| `PANEL_PASSWORD` | no | Enables the web admin panel; required to start it |
+| `WEB_PORT` | no | Port for the web panel (your host's allocated port) |
+| `WEB_HOST` | no | Bind address for the web panel (default `0.0.0.0`) |
 
 Anything set per guild with `/scrimconfig server` overrides the environment defaults for that guild.
 
