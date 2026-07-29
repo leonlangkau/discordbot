@@ -16,13 +16,13 @@ When someone runs `/scrim create`, the bot spins up a dedicated category contain
 
 The channels are private — only players who join the scrim (via buttons on the announcement) can see them. When the scrim finishes or is cancelled, the channels are automatically deleted.
 
-## Features
+## Features — fully button-driven GUI
 
-- **`/scrim create`** — create a scrim (game, team size 1v1–10v10, optional scheduling) with its own private channel category
-- **Join / Leave / Ready buttons** on the announcement embed, with live-updating rosters (buttons survive bot restarts)
-- **`/scrim start`** — go live and ping all players into their team channels
-- **`/scrim report`** — report the final score; stats are recorded and channels cleaned up
-- **`/scrim cancel`**, **`/scrim kick`**, **`/scrim list`** — full lifecycle management (host or moderators only)
+- **`/scrim panel`** — post a persistent **Scrim Hub** embed with a `🎮 Create Scrim` button
+- **Creation wizard** — clicking Create Scrim (or `/scrim create`) opens a private embed with dropdowns: pick the **game** (presets + custom via popup), **team size** (1v1–10v10), and **start time**, then hit ✅ Create
+- **Join / Ready / Leave buttons** on the announcement embed, with live-updating rosters (all buttons survive bot restarts)
+- **Host controls on the embed** — 🏁 Start Match, 🏆 Report Score (popup form for the scores), 🗑️ Cancel; visible to everyone but only usable by the host or moderators
+- Score reporting records stats and automatically deletes the scrim channels
 - **`/stats`** and **`/leaderboard`** — per-server win/loss records
 - **`/scrimconfig`** — admin settings: announcement channel, ping role, max concurrent scrims
 - SQLite persistence — scrims, rosters, stats, and config survive restarts
@@ -51,15 +51,15 @@ Set `GUILD_ID` in `.env` to your server's ID during development so slash command
 
 | Command | Who | What it does |
 |---|---|---|
-| `/scrim create <game> <team_size> [in_hours]` | anyone | Create a scrim + private channels |
+| `/scrim panel` | admins | Post the Scrim Hub panel with the Create Scrim button |
+| `/scrim create` | anyone | Open the scrim creation wizard (same as the panel button) |
 | `/scrim list` | anyone | List active scrims |
-| `/scrim start <scrim_id>` | host/mod | Mark the scrim live and ping players |
-| `/scrim report <scrim_id> <a> <b>` | host/mod | Record the score, update stats, delete channels |
-| `/scrim cancel <scrim_id>` | host/mod | Cancel and delete channels |
 | `/scrim kick <scrim_id> <player>` | host/mod | Remove a player |
 | `/stats [player]` | anyone | Show a player's record |
 | `/leaderboard` | anyone | Top players by wins |
 | `/scrimconfig …` | admins | Announcement channel, ping role, scrim limit |
+
+Starting, reporting, and cancelling scrims all happen through the buttons on the scrim's announcement embed — no IDs to type.
 
 ## Project layout
 

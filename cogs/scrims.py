@@ -1,4 +1,4 @@
-"""Scrim lifecycle: create lobbies, join teams, start matches, report scores."""
+"""Scrim lifecycle: GUI panel, creation wizard, team join buttons, host controls."""
 
 from __future__ import annotations
 
@@ -15,9 +15,29 @@ if TYPE_CHECKING:
 
 TEAM_NAMES = {"a": "Team A", "b": "Team B"}
 
+GAME_CHOICES = [
+    ("Valorant", "🎯"),
+    ("CS2", "💣"),
+    ("League of Legends", "⚔️"),
+    ("Rocket League", "🚗"),
+    ("Overwatch 2", "🛡️"),
+    ("Apex Legends", "🏔️"),
+    ("Fortnite", "🌪️"),
+    ("Call of Duty", "🪖"),
+]
+
 
 def utcnow_ts() -> int:
     return int(datetime.now(timezone.utc).timestamp())
+
+
+def is_host_or_mod(user: discord.Member, scrim) -> bool:
+    return user.id == scrim["creator_id"] or user.guild_permissions.manage_channels
+
+
+# ---------------------------------------------------------------------------
+# Embeds & announcement upkeep
+# ---------------------------------------------------------------------------
 
 
 async def build_scrim_embed(bot: ScrimBot, scrim) -> discord.Embed:
@@ -59,7 +79,10 @@ async def build_scrim_embed(bot: ScrimBot, scrim) -> discord.Embed:
         winner = "Draw" if a == b else ("Team A" if a > b else "Team B")
         embed.add_field(name="Result", value=f"**{a} : {b}** — {winner}", inline=False)
 
-    embed.set_footer(text="Use the buttons below to join, leave, or ready up.")
+    if scrim["status"] == "open":
+        embed.set_footer(text="Join a team, ready up, and the host starts the match.")
+    elif scrim["status"] == "live":
+        embed.set_footer(text="Match in progress — the host reports the score when done.")
     return embed
 
 
@@ -70,11 +93,15 @@ async def refresh_announcement(bot: ScrimBot, scrim_id: int) -> None:
     channel = bot.get_channel(scrim["announce_channel_id"])
     if channel is None:
         return
+    if scrim["status"] == "open":
+        view = OpenScrimView(scrim_id)
+    elif scrim["status"] == "live":
+        view = LiveScrimView(scrim_id)
+    else:
+        view = None
     try:
         message = await channel.fetch_message(scrim["announce_message_id"])
-        embed = await build_scrim_embed(bot, scrim)
-        view = ScrimView(scrim["id"]) if scrim["status"] == "open" else None
-        await message.edit(embed=embed, view=view)
+        await message.edit(embed=await build_scrim_embed(bot, scrim), view=view)
     except discord.HTTPException:
         pass
 
@@ -90,18 +117,14 @@ async def sync_channel_permissions(bot: ScrimBot, scrim_id: int) -> None:
         return
 
     players = await bot.db.get_players(scrim_id)
-    member_teams: dict[discord.Member, str] = {}
-    for p in players:
-        member = guild.get_member(p["user_id"])
-        if member:
-            member_teams[member] = p["team"]
-
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
         guild.me: discord.PermissionOverwrite(view_channel=True, manage_channels=True),
     }
-    for member in member_teams:
-        overwrites[member] = discord.PermissionOverwrite(view_channel=True, connect=True)
+    for p in players:
+        member = guild.get_member(p["user_id"])
+        if member:
+            overwrites[member] = discord.PermissionOverwrite(view_channel=True, connect=True)
     host = guild.get_member(scrim["creator_id"])
     if host:
         overwrites[host] = discord.PermissionOverwrite(view_channel=True, connect=True)
@@ -114,6 +137,174 @@ async def sync_channel_permissions(bot: ScrimBot, scrim_id: int) -> None:
         pass
 
 
+# ---------------------------------------------------------------------------
+# Shared lifecycle actions (used by both buttons and slash commands)
+# ---------------------------------------------------------------------------
+
+
+async def create_scrim_channels(
+    guild: discord.Guild, scrim_id: int, game: str, host: discord.Member
+) -> tuple[discord.CategoryChannel, discord.TextChannel]:
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        guild.me: discord.PermissionOverwrite(view_channel=True, manage_channels=True),
+        host: discord.PermissionOverwrite(view_channel=True, connect=True),
+    }
+    category = await guild.create_category(
+        f"🎮 Scrim #{scrim_id} — {game}"[:100], overwrites=overwrites
+    )
+    lobby = await category.create_text_channel("lobby")
+    await category.create_text_channel("team-a")
+    await category.create_text_channel("team-b")
+    await category.create_voice_channel("🔊 Lobby VC")
+    await category.create_voice_channel("🔵 Team A VC")
+    await category.create_voice_channel("🔴 Team B VC")
+    return category, lobby
+
+
+async def cleanup_channels(bot: ScrimBot, scrim) -> None:
+    guild = bot.get_guild(scrim["guild_id"])
+    category = guild.get_channel(scrim["category_id"]) if guild else None
+    if category is None:
+        return
+    for channel in list(category.channels):
+        try:
+            await channel.delete(reason=f"Scrim #{scrim['id']} ended")
+        except discord.HTTPException:
+            pass
+    try:
+        await category.delete(reason=f"Scrim #{scrim['id']} ended")
+    except discord.HTTPException:
+        pass
+
+
+async def launch_scrim(
+    bot: ScrimBot,
+    guild: discord.Guild,
+    host: discord.Member,
+    fallback_channel: discord.abc.Messageable,
+    game: str,
+    team_size: int,
+    in_hours: float | None,
+) -> str:
+    """Create a scrim end-to-end; returns a status message for the invoker."""
+    config = await bot.db.get_config(guild.id)
+    max_open = config["max_open_scrims"] if config else 5
+    open_scrims = await bot.db.list_scrims(guild.id, ("open", "live"))
+    if len(open_scrims) >= max_open:
+        return (
+            f"❌ This server already has {max_open} active scrims. "
+            "Finish or cancel one first."
+        )
+
+    scheduled_for = str(utcnow_ts() + int(in_hours * 3600)) if in_hours else None
+    scrim_id = await bot.db.create_scrim(
+        guild.id, host.id, game, team_size, scheduled_for
+    )
+
+    try:
+        category, lobby = await create_scrim_channels(guild, scrim_id, game, host)
+    except discord.Forbidden:
+        await bot.db.update_scrim(scrim_id, status="cancelled")
+        return "❌ I need the **Manage Channels** permission to create scrim channels."
+
+    announce_channel = None
+    if config and config["announce_channel_id"]:
+        announce_channel = guild.get_channel(config["announce_channel_id"])
+    announce_channel = announce_channel or fallback_channel
+
+    await bot.db.update_scrim(
+        scrim_id,
+        category_id=category.id,
+        lobby_channel_id=lobby.id,
+        announce_channel_id=announce_channel.id,
+    )
+    scrim = await bot.db.get_scrim(scrim_id)
+    message = await announce_channel.send(
+        content=(
+            f"<@&{config['scrim_role_id']}> a new scrim is up!"
+            if config and config["scrim_role_id"]
+            else None
+        ),
+        embed=await build_scrim_embed(bot, scrim),
+        view=OpenScrimView(scrim_id),
+    )
+    await bot.db.update_scrim(scrim_id, announce_message_id=message.id)
+
+    await lobby.send(
+        f"Welcome to **Scrim #{scrim_id} — {game}**! "
+        f"Host: {host.mention}. Team channels are on the left; "
+        "they unlock for players as they join via the announcement buttons."
+    )
+    return (
+        f"✅ Scrim **#{scrim_id}** created — announcement posted in "
+        f"{announce_channel.mention}, private channels under **{category.name}**."
+    )
+
+
+async def start_scrim(bot: ScrimBot, guild: discord.Guild, scrim) -> str:
+    players = await bot.db.get_players(scrim["id"])
+    not_ready = [p for p in players if not p["ready"]]
+    note = f"\n⚠️ {len(not_ready)} player(s) had not readied up." if not_ready else ""
+    await bot.db.update_scrim(scrim["id"], status="live")
+    await refresh_announcement(bot, scrim["id"])
+
+    lobby = guild.get_channel(scrim["lobby_channel_id"])
+    if lobby:
+        mentions = " ".join(f"<@{p['user_id']}>" for p in players)
+        await lobby.send(
+            f"🏁 **Scrim #{scrim['id']} is LIVE!** {mentions}\n"
+            f"Hop into your team voice channels. GLHF!{note}"
+        )
+    return f"🏁 Scrim #{scrim['id']} is now **live**!{note}"
+
+
+async def finish_scrim(
+    bot: ScrimBot, guild: discord.Guild, scrim, team_a_score: int, team_b_score: int
+) -> str:
+    await bot.db.update_scrim(
+        scrim["id"],
+        status="finished",
+        team_a_score=team_a_score,
+        team_b_score=team_b_score,
+    )
+    players = await bot.db.get_players(scrim["id"])
+    if team_a_score == team_b_score:
+        outcomes = {"a": "draw", "b": "draw"}
+    elif team_a_score > team_b_score:
+        outcomes = {"a": "win", "b": "loss"}
+    else:
+        outcomes = {"a": "loss", "b": "win"}
+    for p in players:
+        if p["team"] in outcomes:
+            await bot.db.record_result(guild.id, p["user_id"], outcomes[p["team"]])
+
+    await refresh_announcement(bot, scrim["id"])
+    await cleanup_channels(bot, scrim)
+
+    winner = (
+        "It's a **draw**!"
+        if team_a_score == team_b_score
+        else f"**{'Team A' if team_a_score > team_b_score else 'Team B'} wins!**"
+    )
+    return (
+        f"🏆 Scrim #{scrim['id']} finished **{team_a_score} : {team_b_score}** — {winner} "
+        "Stats recorded and scrim channels cleaned up. GGs! 🎉"
+    )
+
+
+async def cancel_scrim(bot: ScrimBot, scrim) -> str:
+    await bot.db.update_scrim(scrim["id"], status="cancelled")
+    await refresh_announcement(bot, scrim["id"])
+    await cleanup_channels(bot, scrim)
+    return f"🗑️ Scrim #{scrim['id']} cancelled and channels removed."
+
+
+# ---------------------------------------------------------------------------
+# Player buttons (persistent via DynamicItem)
+# ---------------------------------------------------------------------------
+
+
 class JoinButton(
     discord.ui.DynamicItem[discord.ui.Button],
     template=r"scrim:join:(?P<team>[ab]):(?P<id>\d+)",
@@ -124,8 +315,10 @@ class JoinButton(
         super().__init__(
             discord.ui.Button(
                 label=f"Join {TEAM_NAMES[team]}",
-                style=discord.ButtonStyle.success if team == "a" else discord.ButtonStyle.primary,
+                emoji="🔵" if team == "a" else "🔴",
+                style=discord.ButtonStyle.primary,
                 custom_id=f"scrim:join:{team}:{scrim_id}",
+                row=0,
             )
         )
 
@@ -179,8 +372,10 @@ class LeaveButton(
         super().__init__(
             discord.ui.Button(
                 label="Leave",
-                style=discord.ButtonStyle.danger,
+                emoji="🚪",
+                style=discord.ButtonStyle.secondary,
                 custom_id=f"scrim:leave:{scrim_id}",
+                row=0,
             )
         )
 
@@ -217,9 +412,11 @@ class ReadyButton(
         self.scrim_id = scrim_id
         super().__init__(
             discord.ui.Button(
-                label="Ready / Unready",
-                style=discord.ButtonStyle.secondary,
+                label="Ready",
+                emoji="✅",
+                style=discord.ButtonStyle.success,
                 custom_id=f"scrim:ready:{scrim_id}",
+                row=0,
             )
         )
 
@@ -245,13 +442,378 @@ class ReadyButton(
         await refresh_announcement(bot, self.scrim_id)
 
 
-class ScrimView(discord.ui.View):
+# ---------------------------------------------------------------------------
+# Host control buttons (persistent via DynamicItem)
+# ---------------------------------------------------------------------------
+
+
+async def _host_gate(interaction: discord.Interaction, scrim_id: int):
+    """Fetch the scrim and verify the clicker may manage it. Returns scrim or None."""
+    bot: ScrimBot = interaction.client
+    scrim = await bot.db.get_scrim(scrim_id)
+    if not scrim or scrim["guild_id"] != interaction.guild_id:
+        await interaction.response.send_message("Scrim not found.", ephemeral=True)
+        return None
+    if not is_host_or_mod(interaction.user, scrim):
+        await interaction.response.send_message(
+            "Only the host or a moderator can use the host controls.", ephemeral=True
+        )
+        return None
+    return scrim
+
+
+class StartButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"scrim:start:(?P<id>\d+)",
+):
+    def __init__(self, scrim_id: int) -> None:
+        self.scrim_id = scrim_id
+        super().__init__(
+            discord.ui.Button(
+                label="Start Match",
+                emoji="🏁",
+                style=discord.ButtonStyle.success,
+                custom_id=f"scrim:start:{scrim_id}",
+                row=1,
+            )
+        )
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match: re.Match):
+        return cls(int(match["id"]))
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        scrim = await _host_gate(interaction, self.scrim_id)
+        if scrim is None:
+            return
+        if scrim["status"] != "open":
+            await interaction.response.send_message(
+                f"Scrim #{self.scrim_id} is {scrim['status']}, not open.", ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        result = await start_scrim(interaction.client, interaction.guild, scrim)
+        await interaction.followup.send(result, ephemeral=True)
+
+
+class ReportScoreModal(discord.ui.Modal):
+    team_a = discord.ui.TextInput(
+        label="Team A score", placeholder="e.g. 13", max_length=4
+    )
+    team_b = discord.ui.TextInput(
+        label="Team B score", placeholder="e.g. 7", max_length=4
+    )
+
+    def __init__(self, scrim_id: int) -> None:
+        super().__init__(title=f"Report score — Scrim #{scrim_id}")
+        self.scrim_id = scrim_id
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            a = int(str(self.team_a.value).strip())
+            b = int(str(self.team_b.value).strip())
+            if a < 0 or b < 0:
+                raise ValueError
+        except ValueError:
+            await interaction.response.send_message(
+                "Scores must be non-negative whole numbers.", ephemeral=True
+            )
+            return
+
+        bot: ScrimBot = interaction.client
+        scrim = await bot.db.get_scrim(self.scrim_id)
+        if not scrim or scrim["status"] not in ("open", "live"):
+            await interaction.response.send_message(
+                "This scrim can no longer be reported.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        result = await finish_scrim(bot, interaction.guild, scrim, a, b)
+        await interaction.followup.send(result, ephemeral=True)
+        announce = interaction.guild.get_channel(scrim["announce_channel_id"])
+        if announce:
+            await announce.send(result)
+
+
+class ReportButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"scrim:report:(?P<id>\d+)",
+):
+    def __init__(self, scrim_id: int) -> None:
+        self.scrim_id = scrim_id
+        super().__init__(
+            discord.ui.Button(
+                label="Report Score",
+                emoji="🏆",
+                style=discord.ButtonStyle.primary,
+                custom_id=f"scrim:report:{scrim_id}",
+                row=1,
+            )
+        )
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match: re.Match):
+        return cls(int(match["id"]))
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        scrim = await _host_gate(interaction, self.scrim_id)
+        if scrim is None:
+            return
+        if scrim["status"] not in ("open", "live"):
+            await interaction.response.send_message(
+                f"Scrim #{self.scrim_id} is already {scrim['status']}.", ephemeral=True
+            )
+            return
+        await interaction.response.send_modal(ReportScoreModal(self.scrim_id))
+
+
+class CancelButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"scrim:cancel:(?P<id>\d+)",
+):
+    def __init__(self, scrim_id: int) -> None:
+        self.scrim_id = scrim_id
+        super().__init__(
+            discord.ui.Button(
+                label="Cancel",
+                emoji="🗑️",
+                style=discord.ButtonStyle.danger,
+                custom_id=f"scrim:cancel:{scrim_id}",
+                row=1,
+            )
+        )
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match: re.Match):
+        return cls(int(match["id"]))
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        scrim = await _host_gate(interaction, self.scrim_id)
+        if scrim is None:
+            return
+        if scrim["status"] in ("finished", "cancelled"):
+            await interaction.response.send_message(
+                f"Scrim #{self.scrim_id} is already {scrim['status']}.", ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        result = await cancel_scrim(interaction.client, scrim)
+        await interaction.followup.send(result, ephemeral=True)
+
+
+class OpenScrimView(discord.ui.View):
+    """Announcement buttons while a scrim is open: player row + host row."""
+
     def __init__(self, scrim_id: int) -> None:
         super().__init__(timeout=None)
         self.add_item(JoinButton("a", scrim_id))
         self.add_item(JoinButton("b", scrim_id))
         self.add_item(ReadyButton(scrim_id))
         self.add_item(LeaveButton(scrim_id))
+        self.add_item(StartButton(scrim_id))
+        self.add_item(ReportButton(scrim_id))
+        self.add_item(CancelButton(scrim_id))
+
+
+class LiveScrimView(discord.ui.View):
+    """Announcement buttons while a scrim is live: host controls only."""
+
+    def __init__(self, scrim_id: int) -> None:
+        super().__init__(timeout=None)
+        self.add_item(ReportButton(scrim_id))
+        self.add_item(CancelButton(scrim_id))
+
+
+# ---------------------------------------------------------------------------
+# Creation wizard (ephemeral GUI with select menus)
+# ---------------------------------------------------------------------------
+
+
+class CustomGameModal(discord.ui.Modal, title="Custom game"):
+    game_name = discord.ui.TextInput(
+        label="Game name", placeholder="e.g. Trackmania", max_length=60
+    )
+
+    def __init__(self, wizard: ScrimWizard) -> None:
+        super().__init__()
+        self.wizard = wizard
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        self.wizard.game = str(self.game_name.value).strip()
+        self.wizard.game_select.placeholder = f"Game: {self.wizard.game}"
+        try:
+            await interaction.response.edit_message(view=self.wizard)
+        except discord.HTTPException:
+            await interaction.response.defer()
+
+
+class ScrimWizard(discord.ui.View):
+    """Ephemeral step-by-step scrim creator driven entirely by selects/buttons."""
+
+    def __init__(self, bot: ScrimBot, user_id: int) -> None:
+        super().__init__(timeout=600)
+        self.bot = bot
+        self.user_id = user_id
+        self.game: str | None = None
+        self.team_size: int | None = None
+        self.in_hours: float | None = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "This wizard belongs to someone else — press **Create Scrim** "
+                "on the panel to get your own.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    @staticmethod
+    def make_embed() -> discord.Embed:
+        embed = discord.Embed(
+            title="🛠️ Create a scrim",
+            description=(
+                "1️⃣ Pick the **game**\n"
+                "2️⃣ Pick the **team size**\n"
+                "3️⃣ Optionally pick a **start time**\n\n"
+                "Then hit **✅ Create** — I'll set up private lobby, team text, "
+                "and voice channels, and post a sign-up announcement."
+            ),
+            color=discord.Color.green(),
+        )
+        return embed
+
+    @discord.ui.select(
+        placeholder="🎮 Choose a game…",
+        row=0,
+        options=[
+            *[
+                discord.SelectOption(label=name, value=name, emoji=emoji)
+                for name, emoji in GAME_CHOICES
+            ],
+            discord.SelectOption(
+                label="Custom…", value="__custom__", emoji="✏️",
+                description="Type any game name",
+            ),
+        ],
+    )
+    async def game_select(
+        self, interaction: discord.Interaction, select: discord.ui.Select
+    ) -> None:
+        choice = select.values[0]
+        if choice == "__custom__":
+            await interaction.response.send_modal(CustomGameModal(self))
+            return
+        self.game = choice
+        select.placeholder = f"Game: {choice}"
+        await interaction.response.edit_message(view=self)
+
+    @discord.ui.select(
+        placeholder="👥 Choose a team size…",
+        row=1,
+        options=[
+            discord.SelectOption(label=f"{n}v{n}", value=str(n))
+            for n in range(1, 11)
+        ],
+    )
+    async def size_select(
+        self, interaction: discord.Interaction, select: discord.ui.Select
+    ) -> None:
+        self.team_size = int(select.values[0])
+        select.placeholder = f"Team size: {self.team_size}v{self.team_size}"
+        await interaction.response.edit_message(view=self)
+
+    @discord.ui.select(
+        placeholder="🕒 Start time (optional, default: now)…",
+        row=2,
+        options=[
+            discord.SelectOption(label="Now", value="0"),
+            discord.SelectOption(label="In 1 hour", value="1"),
+            discord.SelectOption(label="In 2 hours", value="2"),
+            discord.SelectOption(label="In 3 hours", value="3"),
+            discord.SelectOption(label="In 6 hours", value="6"),
+            discord.SelectOption(label="In 12 hours", value="12"),
+            discord.SelectOption(label="Tomorrow (24h)", value="24"),
+        ],
+    )
+    async def time_select(
+        self, interaction: discord.Interaction, select: discord.ui.Select
+    ) -> None:
+        hours = float(select.values[0])
+        self.in_hours = hours or None
+        label = "Now" if not hours else f"In {select.values[0]}h"
+        select.placeholder = f"Start time: {label}"
+        await interaction.response.edit_message(view=self)
+
+    @discord.ui.button(label="Create", emoji="✅", style=discord.ButtonStyle.success, row=3)
+    async def create_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if self.game is None or self.team_size is None:
+            await interaction.response.send_message(
+                "Pick a **game** and a **team size** first.", ephemeral=True
+            )
+            return
+        await interaction.response.edit_message(
+            content="⏳ Setting up your scrim…", embed=None, view=None
+        )
+        self.stop()
+        result = await launch_scrim(
+            self.bot,
+            interaction.guild,
+            interaction.user,
+            interaction.channel,
+            self.game,
+            self.team_size,
+            self.in_hours,
+        )
+        await interaction.edit_original_response(content=result)
+
+    @discord.ui.button(label="Discard", emoji="✖️", style=discord.ButtonStyle.secondary, row=3)
+    async def discard_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self.stop()
+        await interaction.response.edit_message(
+            content="Scrim creation discarded.", embed=None, view=None
+        )
+
+
+class PanelButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"scrim:panel:create",
+):
+    def __init__(self) -> None:
+        super().__init__(
+            discord.ui.Button(
+                label="Create Scrim",
+                emoji="🎮",
+                style=discord.ButtonStyle.success,
+                custom_id="scrim:panel:create",
+            )
+        )
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match: re.Match):
+        return cls()
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        wizard = ScrimWizard(interaction.client, interaction.user.id)
+        await interaction.response.send_message(
+            embed=ScrimWizard.make_embed(), view=wizard, ephemeral=True
+        )
+
+
+class PanelView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+        self.add_item(PanelButton())
+
+
+# ---------------------------------------------------------------------------
+# Slash commands
+# ---------------------------------------------------------------------------
 
 
 class Scrims(commands.Cog):
@@ -261,133 +823,44 @@ class Scrims(commands.Cog):
         self.bot = bot
 
     async def cog_load(self) -> None:
-        self.bot.add_dynamic_items(JoinButton, LeaveButton, ReadyButton)
+        self.bot.add_dynamic_items(
+            JoinButton,
+            LeaveButton,
+            ReadyButton,
+            StartButton,
+            ReportButton,
+            CancelButton,
+            PanelButton,
+        )
 
     scrim = app_commands.Group(name="scrim", description="Create and manage scrims")
 
-    # ---- helpers ----------------------------------------------------------
-
-    async def _is_host_or_mod(self, interaction: discord.Interaction, scrim) -> bool:
-        return (
-            interaction.user.id == scrim["creator_id"]
-            or interaction.user.guild_permissions.manage_channels
-        )
-
-    async def _create_scrim_channels(
-        self, guild: discord.Guild, scrim_id: int, game: str, host: discord.Member
-    ) -> tuple[discord.CategoryChannel, discord.TextChannel]:
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            guild.me: discord.PermissionOverwrite(view_channel=True, manage_channels=True),
-            host: discord.PermissionOverwrite(view_channel=True, connect=True),
-        }
-        category = await guild.create_category(
-            f"🎮 Scrim #{scrim_id} — {game}"[:100], overwrites=overwrites
-        )
-        lobby = await category.create_text_channel("lobby")
-        await category.create_text_channel("team-a")
-        await category.create_text_channel("team-b")
-        await category.create_voice_channel("🔊 Lobby VC")
-        await category.create_voice_channel("🔵 Team A VC")
-        await category.create_voice_channel("🔴 Team B VC")
-        return category, lobby
-
-    async def _cleanup_channels(self, scrim) -> None:
-        guild = self.bot.get_guild(scrim["guild_id"])
-        category = guild.get_channel(scrim["category_id"]) if guild else None
-        if category is None:
-            return
-        for channel in list(category.channels):
-            try:
-                await channel.delete(reason=f"Scrim #{scrim['id']} ended")
-            except discord.HTTPException:
-                pass
-        try:
-            await category.delete(reason=f"Scrim #{scrim['id']} ended")
-        except discord.HTTPException:
-            pass
-
-    # ---- commands ---------------------------------------------------------
-
-    @scrim.command(name="create", description="Create a new scrim with its own private channels")
-    @app_commands.describe(
-        game="The game being played (e.g. Valorant, CS2, Rocket League)",
-        team_size="Players per team (1-10)",
-        in_hours="Optional: schedule the scrim this many hours from now",
+    @scrim.command(
+        name="panel",
+        description="Post the scrim panel with a Create Scrim button (admin)",
     )
-    async def create(
-        self,
-        interaction: discord.Interaction,
-        game: str,
-        team_size: app_commands.Range[int, 1, 10],
-        in_hours: app_commands.Range[float, 0.0, 168.0] | None = None,
-    ) -> None:
-        config = await self.bot.db.get_config(interaction.guild_id)
-        max_open = config["max_open_scrims"] if config else 5
-        open_scrims = await self.bot.db.list_scrims(interaction.guild_id, ("open", "live"))
-        if len(open_scrims) >= max_open:
-            await interaction.response.send_message(
-                f"This server already has {max_open} active scrims. "
-                "Finish or cancel one first.",
-                ephemeral=True,
-            )
-            return
-
-        await interaction.response.defer()
-
-        scheduled_for = str(utcnow_ts() + int(in_hours * 3600)) if in_hours else None
-        scrim_id = await self.bot.db.create_scrim(
-            interaction.guild_id, interaction.user.id, game, team_size, scheduled_for
-        )
-
-        try:
-            category, lobby = await self._create_scrim_channels(
-                interaction.guild, scrim_id, game, interaction.user
-            )
-        except discord.Forbidden:
-            await self.bot.db.update_scrim(scrim_id, status="cancelled")
-            await interaction.followup.send(
-                "I need the **Manage Channels** permission to create scrim channels.",
-                ephemeral=True,
-            )
-            return
-
-        announce_channel_id = (
-            config["announce_channel_id"] if config and config["announce_channel_id"] else None
-        )
-        announce_channel = (
-            interaction.guild.get_channel(announce_channel_id)
-            if announce_channel_id
-            else interaction.channel
-        ) or interaction.channel
-
-        await self.bot.db.update_scrim(
-            scrim_id,
-            category_id=category.id,
-            lobby_channel_id=lobby.id,
-            announce_channel_id=announce_channel.id,
-        )
-        scrim = await self.bot.db.get_scrim(scrim_id)
-        embed = await build_scrim_embed(self.bot, scrim)
-        message = await announce_channel.send(
-            content=(
-                f"<@&{config['scrim_role_id']}> a new scrim is up!"
-                if config and config["scrim_role_id"]
-                else None
+    @app_commands.default_permissions(manage_guild=True)
+    async def panel(self, interaction: discord.Interaction) -> None:
+        embed = discord.Embed(
+            title="🎮 Scrim Hub",
+            description=(
+                "Ready to run a practice match?\n\n"
+                "Hit **Create Scrim** below and a step-by-step wizard walks you "
+                "through picking the game, team size, and start time. The bot then "
+                "creates private lobby, team text, and voice channels, and posts a "
+                "sign-up announcement where players join with one click."
             ),
-            embed=embed,
-            view=ScrimView(scrim_id),
+            color=discord.Color.green(),
         )
-        await self.bot.db.update_scrim(scrim_id, announce_message_id=message.id)
+        embed.set_footer(text="Scrims get their own private channels — cleaned up automatically.")
+        await interaction.channel.send(embed=embed, view=PanelView())
+        await interaction.response.send_message("Scrim panel posted. 📌", ephemeral=True)
 
-        await lobby.send(
-            f"Welcome to **Scrim #{scrim_id} — {game}**! "
-            f"Host: {interaction.user.mention}. Team channels are on the left; "
-            "they unlock for players as they join via the announcement buttons."
-        )
-        await interaction.followup.send(
-            f"Scrim **#{scrim_id}** created — announcement posted in "
-            f"{announce_channel.mention}, private channels under **{category.name}**."
+    @scrim.command(name="create", description="Open the scrim creation wizard")
+    async def create(self, interaction: discord.Interaction) -> None:
+        wizard = ScrimWizard(self.bot, interaction.user.id)
+        await interaction.response.send_message(
+            embed=ScrimWizard.make_embed(), view=wizard, ephemeral=True
         )
 
     @scrim.command(name="list", description="List active scrims in this server")
@@ -411,125 +884,6 @@ class Scrims(commands.Cog):
             )
         await interaction.response.send_message(embed=embed)
 
-    @scrim.command(name="start", description="Start the scrim (host only)")
-    @app_commands.describe(scrim_id="The scrim number to start")
-    async def start(self, interaction: discord.Interaction, scrim_id: int) -> None:
-        scrim = await self.bot.db.get_scrim(scrim_id)
-        if not scrim or scrim["guild_id"] != interaction.guild_id:
-            await interaction.response.send_message("Scrim not found.", ephemeral=True)
-            return
-        if not await self._is_host_or_mod(interaction, scrim):
-            await interaction.response.send_message(
-                "Only the host or a moderator can start this scrim.", ephemeral=True
-            )
-            return
-        if scrim["status"] != "open":
-            await interaction.response.send_message(
-                f"Scrim #{scrim_id} is {scrim['status']}, not open.", ephemeral=True
-            )
-            return
-
-        players = await self.bot.db.get_players(scrim_id)
-        not_ready = [p for p in players if not p["ready"]]
-        note = (
-            f"\n⚠️ {len(not_ready)} player(s) had not readied up." if not_ready else ""
-        )
-        await self.bot.db.update_scrim(scrim_id, status="live")
-        await refresh_announcement(self.bot, scrim_id)
-
-        lobby = interaction.guild.get_channel(scrim["lobby_channel_id"])
-        if lobby:
-            mentions = " ".join(f"<@{p['user_id']}>" for p in players)
-            await lobby.send(
-                f"🏁 **Scrim #{scrim_id} is LIVE!** {mentions}\n"
-                f"Hop into your team voice channels. GLHF!{note}"
-            )
-        await interaction.response.send_message(f"Scrim #{scrim_id} is now **live**!{note}")
-
-    @scrim.command(name="report", description="Report the final score and close the scrim")
-    @app_commands.describe(
-        scrim_id="The scrim number", team_a_score="Team A's score", team_b_score="Team B's score"
-    )
-    async def report(
-        self,
-        interaction: discord.Interaction,
-        scrim_id: int,
-        team_a_score: app_commands.Range[int, 0, 999],
-        team_b_score: app_commands.Range[int, 0, 999],
-    ) -> None:
-        scrim = await self.bot.db.get_scrim(scrim_id)
-        if not scrim or scrim["guild_id"] != interaction.guild_id:
-            await interaction.response.send_message("Scrim not found.", ephemeral=True)
-            return
-        if not await self._is_host_or_mod(interaction, scrim):
-            await interaction.response.send_message(
-                "Only the host or a moderator can report the score.", ephemeral=True
-            )
-            return
-        if scrim["status"] not in ("open", "live"):
-            await interaction.response.send_message(
-                f"Scrim #{scrim_id} is already {scrim['status']}.", ephemeral=True
-            )
-            return
-
-        await interaction.response.defer()
-        await self.bot.db.update_scrim(
-            scrim_id,
-            status="finished",
-            team_a_score=team_a_score,
-            team_b_score=team_b_score,
-        )
-
-        players = await self.bot.db.get_players(scrim_id)
-        if team_a_score == team_b_score:
-            outcomes = {"a": "draw", "b": "draw"}
-        elif team_a_score > team_b_score:
-            outcomes = {"a": "win", "b": "loss"}
-        else:
-            outcomes = {"a": "loss", "b": "win"}
-        for p in players:
-            if p["team"] in outcomes:
-                await self.bot.db.record_result(
-                    interaction.guild_id, p["user_id"], outcomes[p["team"]]
-                )
-
-        await refresh_announcement(self.bot, scrim_id)
-        await self._cleanup_channels(scrim)
-
-        winner = (
-            "It's a **draw**!"
-            if team_a_score == team_b_score
-            else f"**{'Team A' if team_a_score > team_b_score else 'Team B'} wins!**"
-        )
-        await interaction.followup.send(
-            f"Scrim #{scrim_id} finished **{team_a_score} : {team_b_score}** — {winner} "
-            "Stats recorded and scrim channels cleaned up. GGs! 🎉"
-        )
-
-    @scrim.command(name="cancel", description="Cancel a scrim and delete its channels")
-    @app_commands.describe(scrim_id="The scrim number to cancel")
-    async def cancel(self, interaction: discord.Interaction, scrim_id: int) -> None:
-        scrim = await self.bot.db.get_scrim(scrim_id)
-        if not scrim or scrim["guild_id"] != interaction.guild_id:
-            await interaction.response.send_message("Scrim not found.", ephemeral=True)
-            return
-        if not await self._is_host_or_mod(interaction, scrim):
-            await interaction.response.send_message(
-                "Only the host or a moderator can cancel this scrim.", ephemeral=True
-            )
-            return
-        if scrim["status"] in ("finished", "cancelled"):
-            await interaction.response.send_message(
-                f"Scrim #{scrim_id} is already {scrim['status']}.", ephemeral=True
-            )
-            return
-
-        await interaction.response.defer()
-        await self.bot.db.update_scrim(scrim_id, status="cancelled")
-        await refresh_announcement(self.bot, scrim_id)
-        await self._cleanup_channels(scrim)
-        await interaction.followup.send(f"Scrim #{scrim_id} cancelled and channels removed.")
-
     @scrim.command(name="kick", description="Remove a player from a scrim (host only)")
     @app_commands.describe(scrim_id="The scrim number", player="The player to remove")
     async def kick(
@@ -539,7 +893,7 @@ class Scrims(commands.Cog):
         if not scrim or scrim["guild_id"] != interaction.guild_id:
             await interaction.response.send_message("Scrim not found.", ephemeral=True)
             return
-        if not await self._is_host_or_mod(interaction, scrim):
+        if not is_host_or_mod(interaction.user, scrim):
             await interaction.response.send_message(
                 "Only the host or a moderator can kick players.", ephemeral=True
             )
