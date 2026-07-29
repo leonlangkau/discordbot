@@ -77,13 +77,14 @@ GAME_META: dict[str, tuple] = {
     "plinko": (
         "🔻", "Plinko", "Casino", "plinko",
         ("Risk", "medium",
-         [("🟢 Low (max 3x)", "low"), ("🟡 Medium (max 7x)", "medium"),
-          ("🟠 High (max 15x)", "high"), ("🔴 Extreme (max 60x)", "extreme")]),
+         [("🟢 Low (max 10x)", "low"), ("🟡 Medium (max 25x)", "medium"),
+          ("🟠 High (max 50x)", "high"), ("🔴 Extreme (max 90x)", "extreme")]),
     ),
     "mines": (
         "💣", "Mines", "Casino", "mines",
         ("Mines", "3", [("1 mine (chill)", "1"), ("3 mines", "3"), ("5 mines", "5"),
-                        ("7 mines (spicy)", "7"), ("10 mines (insane)", "10")]),
+                        ("7 mines (spicy)", "7"), ("12 mines (insane)", "12"),
+                        ("24 mines (death)", "24")]),
     ),
     "baccarat": (
         "🎴", "Baccarat", "Casino", "baccarat",
@@ -227,7 +228,24 @@ class BetPanel(discord.ui.View):
         self.balance = econ["balance"]
         self.bet = max(10, min(self.bet, MAX_BET))
         self.build()
-        await interaction.response.edit_message(embed=self.embed(), view=self)
+        await interaction.response.edit_message(
+            embed=self.embed(), attachments=[], view=self
+        )
+
+    def result_embed(self, content: str, file) -> discord.Embed:
+        """The betting window after a spin: result image + updated balance."""
+        emoji, title, *_, spec = GAME_META[self.game]
+        embed = discord.Embed(
+            title=f"{emoji} {title}",
+            description=content,
+            color=discord.Color.from_str("#2ecc71"),
+        )
+        if file is not None:
+            embed.set_image(url=f"attachment://{file.filename}")
+        embed.add_field(name=f"{COIN} Balance", value=f"```{self.balance:,}```", inline=True)
+        embed.add_field(name="💵 Bet", value=f"```{self.bet:,}```", inline=True)
+        embed.set_footer(text="Adjust the bet and hit ▶ Play again")
+        return embed
 
     def build(self) -> None:
         self.clear_items()
@@ -332,26 +350,28 @@ class BetPanel(discord.ui.View):
                 ephemeral=True,
             )
             return
+        from cogs.casino import INSTANT_GAMES
+
         _, _, cog_name, command_name, spec = GAME_META[self.game]
         cog = self.bot.get_cog(cog_name)
+
+        # Instant games render in place (edit this window); interactive games
+        # (blackjack, mines, tower) open their own message.
+        if self.game in INSTANT_GAMES:
+            if self.game == "roulette" and self.option == "number" and self.number is None:
+                await interaction.response.send_message(
+                    "Pick your number first (Bet on → Single number).", ephemeral=True
+                )
+                return
+            await cog.run_from_panel(
+                self.game, interaction, self, self.bet, self.option, self.number
+            )
+            return
+
         callback = getattr(cog, command_name).callback
         args: list = [self.bet]
-        if spec:
-            if self.game == "roulette":
-                if self.option == "number":
-                    if self.number is None:
-                        await interaction.response.send_message(
-                            "Pick your number first (Bet on → Single number).",
-                            ephemeral=True,
-                        )
-                        return
-                    args += [choice("number"), self.number]
-                else:
-                    args += [choice(self.option), None]
-            elif self.game == "mines":
-                args.append(int(self.option))
-            else:
-                args.append(choice(self.option))
+        if self.game == "mines":
+            args.append(int(self.option))
         await callback(cog, interaction, *args)
 
 

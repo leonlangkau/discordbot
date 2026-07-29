@@ -29,6 +29,7 @@ class _Response:
         *,
         embed: discord.Embed | None = None,
         view: discord.ui.View | None = None,
+        file: discord.File | None = None,
         ephemeral: bool = False,  # no ephemeral in text chat; sent normally
         allowed_mentions: discord.AllowedMentions | None = None,
     ) -> None:
@@ -37,6 +38,8 @@ class _Response:
             kwargs["embed"] = embed
         if view is not None:
             kwargs["view"] = view
+        if file is not None:
+            kwargs["file"] = file
         if allowed_mentions is not None:
             kwargs["allowed_mentions"] = allowed_mentions
         await self._ctx.send(content, **kwargs)

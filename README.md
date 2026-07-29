@@ -35,7 +35,7 @@ The channels are private — only players who join the scrim (via buttons on the
 - **Grinding** — `/beg` (5 min), `/fish` (10 min, can catch inventory items), `/postmeme` (15 min, up to 350), `/crime` (30 min, high risk/reward), `/rob @user` (1h — steal 10–25% of their wallet or pay them damages when caught)
 - **Elo** — team-based Elo (K=32) moves with every reported scrim; ranks from Silver to Global Elite
 - **XP & levels** — chat and scrims grant XP, with level-up announcements
-- **Casino** — `/coinflip`, `/dice`, `/rps`, `/slots`, `/roulette`, `/plinko` (4 risk levels, up to 60x), `/blackjack` (hit/stand buttons), `/mines` (tile grid + cash out), `/tower` (climb 8 floors), `/baccarat` (full third-card rules)
+- **Casino (rendered PNG graphics)** — `/slots`, `/blackjack`, `/mines` (5×5 board), `/plinko`, `/roulette` draw real images; `/dice`, `/rps`, `/coinflip`, `/tower`, `/baccarat` too. Plinko has 4 risk levels with big side multipliers (up to **90x**). In the betting window, instant games (slots, plinko, roulette, dice, coinflip, rps, baccarat) **replay in the same message** instead of spamming new ones.
 - **Scrim betting** — `/bet` on Team A/B while a scrim is open; pays 2x, refunded on draws and cancels; players can't bet on their own match
 - **Duels** — `/duel @user wager` creates a 1v1 scrim with both wagers escrowed; winner takes the pot on the reported score
 - **Shop** — `/shop` with a buy menu; admins stock roles via `/shopadmin add`, grant coins with `/shopadmin give`
