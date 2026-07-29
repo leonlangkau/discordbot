@@ -65,6 +65,7 @@ class Stats(commands.Cog):
         if now - self._xp_cooldowns.get(key, 0) < MESSAGE_XP_COOLDOWN:
             return
         self._xp_cooldowns[key] = now
+        await self.bot.db.add_coins(message.guild.id, message.author.id, 5)
         old_xp, new_xp = await self.bot.db.add_xp(
             message.guild.id, message.author.id, MESSAGE_XP
         )

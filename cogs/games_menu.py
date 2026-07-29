@@ -491,11 +491,21 @@ class GamesMenu(discord.ui.View):
         self.clear_items()
         self.button("Daily", discord.ButtonStyle.success,
                     self.cog_button("Economy", "daily"), 0, "📅")
+        self.button("Weekly", discord.ButtonStyle.success,
+                    self.cog_button("Economy", "weekly"), 0, "🗓️")
         self.button("Work", discord.ButtonStyle.success,
                     self.cog_button("Economy", "work"), 0, "🔨")
-        self.button("Balance", discord.ButtonStyle.primary,
-                    self.cog_button("Economy", "balance", None), 0, "🪙")
-        self.add_back()
+        self.button("Fish", discord.ButtonStyle.success,
+                    self.cog_button("Economy", "fish"), 0, "🎣")
+        self.button("Beg", discord.ButtonStyle.primary,
+                    self.cog_button("Economy", "beg"), 1, "🥺")
+        self.button("Crime", discord.ButtonStyle.danger,
+                    self.cog_button("Economy", "crime"), 1, "🕶️")
+        self.button("Post Meme", discord.ButtonStyle.primary,
+                    self.cog_button("Economy", "postmeme"), 1, "📸")
+        self.button("Balance", discord.ButtonStyle.secondary,
+                    self.cog_button("Economy", "balance", None), 1, "🪙")
+        self.add_back(row=2)
 
     def show_shop(self) -> None:
         self.clear_items()

@@ -31,7 +31,8 @@ The channels are private — only players who join the scrim (via buttons on the
 
 ## Economy & casino
 
-- **Coins** — `/balance`, `/daily` (250, 20h cooldown), `/work` (50–150, 1h), `/pay`; playing scrims pays coins and XP, winning pays more
+- **Coins** — `/balance`, `/daily` (250, 20h), `/weekly` (2,000, 7d), `/work` (50–150, 1h), `/pay`; playing scrims pays coins and XP, winning pays more; chatting drips +5 coins/min
+- **Grinding** — `/beg` (5 min), `/fish` (10 min, can catch inventory items), `/postmeme` (15 min, up to 350), `/crime` (30 min, high risk/reward), `/rob @user` (1h — steal 10–25% of their wallet or pay them damages when caught)
 - **Elo** — team-based Elo (K=32) moves with every reported scrim; ranks from Silver to Global Elite
 - **XP & levels** — chat and scrims grant XP, with level-up announcements
 - **Casino** — `/coinflip`, `/dice`, `/rps`, `/slots`, `/roulette`, `/plinko` (4 risk levels, up to 60x), `/blackjack` (hit/stand buttons), `/mines` (tile grid + cash out), `/tower` (climb 8 floors), `/baccarat` (full third-card rules)

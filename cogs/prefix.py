@@ -135,6 +135,36 @@ class Prefix(commands.Cog):
         callback, cog = self.cog_callback("Economy", "shop")
         await callback(cog, CtxInteraction(ctx))
 
+    @commands.command(name="weekly")
+    async def weekly(self, ctx: commands.Context) -> None:
+        callback, cog = self.cog_callback("Economy", "weekly")
+        await callback(cog, CtxInteraction(ctx))
+
+    @commands.command(name="beg")
+    async def beg(self, ctx: commands.Context) -> None:
+        callback, cog = self.cog_callback("Economy", "beg")
+        await callback(cog, CtxInteraction(ctx))
+
+    @commands.command(name="crime")
+    async def crime(self, ctx: commands.Context) -> None:
+        callback, cog = self.cog_callback("Economy", "crime")
+        await callback(cog, CtxInteraction(ctx))
+
+    @commands.command(name="rob", aliases=["steal"])
+    async def rob(self, ctx: commands.Context, target: discord.Member) -> None:
+        callback, cog = self.cog_callback("Economy", "rob")
+        await callback(cog, CtxInteraction(ctx), target)
+
+    @commands.command(name="fish")
+    async def fish(self, ctx: commands.Context) -> None:
+        callback, cog = self.cog_callback("Economy", "fish")
+        await callback(cog, CtxInteraction(ctx))
+
+    @commands.command(name="postmeme", aliases=["meme"])
+    async def postmeme(self, ctx: commands.Context) -> None:
+        callback, cog = self.cog_callback("Economy", "postmeme")
+        await callback(cog, CtxInteraction(ctx))
+
     @commands.command(name="bet")
     async def bet(
         self, ctx: commands.Context, scrim_id: int, team: str, amount: str
@@ -323,9 +353,15 @@ class Prefix(commands.Cog):
         embed.add_field(
             name=f"{COIN} Economy",
             value=(
-                "`.bal [@user]` `.daily` `.work` `.pay @user <amt>`\n"
-                "`.shop` `.bet <scrim#> <a|b> <amt>` `.duel @user <amt> [map]`"
+                "`.bal [@user]` `.daily` `.weekly` `.work` `.pay @user <amt>`\n"
+                "`.beg` `.crime` `.rob @user` `.fish` `.postmeme`\n"
+                "`.shop` `.inv` `.bet <scrim#> <a|b> <amt>` `.duel @user <amt> [map]`"
             ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🕹️ Menu",
+            value="`.g` — full button menu · `.slots` (no amount) — betting window",
             inline=False,
         )
         embed.add_field(

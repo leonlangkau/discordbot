@@ -27,6 +27,48 @@ WORK_LINES = [
     "You clipped a 1v5 and the highlights channel paid {amount} {coin}.",
 ]
 
+WEEKLY_AMOUNT = 2_000
+WEEKLY_COOLDOWN = 7 * 24 * 3600
+
+BEG_LINES = [
+    "A generous admin flips you {amount} {coin}.",
+    "Someone drops {amount} {coin} out of pity.",
+    "You find {amount} {coin} between the couch cushions.",
+    "A whale tips you {amount} {coin} for holding the door.",
+]
+BEG_FAIL_LINES = [
+    "Everyone pretends not to see you. **Nothing.**",
+    "\"Get a job.\" **Nothing.**",
+    "A pigeon steals your cup. **Nothing.**",
+]
+
+CRIME_JOBS = [
+    "hijacked a smurf account and sold it",
+    "scalped tournament tickets",
+    "sold 'undetectable' configs to a rival server",
+    "ran a rigged case-opening site for a day",
+]
+CRIME_FAILS = [
+    "The admins caught you red-handed",
+    "Your buyer was an undercover mod",
+    "You got IP-logged mid-heist",
+]
+
+MEME_OUTCOMES = [
+    (0, "It flopped. 0 upvotes. **Nothing.**"),
+    (50, "Mildly chuckle-worthy. {amount} {coin}."),
+    (120, "Front page of the shitposting channel! {amount} {coin}."),
+    (200, "Certified banger. {amount} {coin}."),
+    (350, "**VIRAL.** Screenshotted and reposted everywhere. {amount} {coin}!"),
+]
+
+FISH_CATCHES = [
+    "a rusty AWP shell casing",
+    "somebody's lost cfg folder",
+    "a soggy mousepad",
+    "an old dusty trophy",
+]
+
 
 def now_ts() -> int:
     return int(datetime.now(timezone.utc).timestamp())
@@ -108,6 +150,150 @@ class Economy(commands.Cog):
         await self.bot.db.add_coins(interaction.guild_id, player.id, amount)
         await interaction.response.send_message(
             f"{COIN} {interaction.user.mention} paid **{amount:,}** coins to {player.mention}."
+        )
+
+    # ---- more ways to make money ------------------------------------------
+
+    async def _check_cooldown(
+        self, interaction: discord.Interaction, action: str, seconds: int
+    ) -> bool:
+        """True if ready; otherwise replies with the remaining time."""
+        last = await self.bot.db.get_cooldown(
+            interaction.guild_id, interaction.user.id, action
+        )
+        now = now_ts()
+        if last + seconds > now:
+            await interaction.response.send_message(
+                f"⏳ Not yet — try again <t:{last + seconds}:R>.", ephemeral=True
+            )
+            return False
+        await self.bot.db.set_cooldown(
+            interaction.guild_id, interaction.user.id, action, now
+        )
+        return True
+
+    @app_commands.command(name="weekly", description="Claim your big weekly payout")
+    async def weekly(self, interaction: discord.Interaction) -> None:
+        if not await self._check_cooldown(interaction, "weekly", WEEKLY_COOLDOWN):
+            return
+        await self.bot.db.add_coins(
+            interaction.guild_id, interaction.user.id, WEEKLY_AMOUNT
+        )
+        await interaction.response.send_message(
+            f"{COIN} Weekly claimed: **+{WEEKLY_AMOUNT:,}** coins! See you next week."
+        )
+
+    @app_commands.command(name="beg", description="Beg for coins (5 min cooldown)")
+    async def beg(self, interaction: discord.Interaction) -> None:
+        if not await self._check_cooldown(interaction, "beg", 300):
+            return
+        if random.random() < 0.35:
+            await interaction.response.send_message(random.choice(BEG_FAIL_LINES))
+            return
+        amount = random.randint(10, 80)
+        await self.bot.db.add_coins(interaction.guild_id, interaction.user.id, amount)
+        await interaction.response.send_message(
+            random.choice(BEG_LINES).format(amount=f"**+{amount}**", coin=COIN)
+        )
+
+    @app_commands.command(
+        name="crime", description="High risk, high reward (30 min cooldown)"
+    )
+    async def crime(self, interaction: discord.Interaction) -> None:
+        if not await self._check_cooldown(interaction, "crime", 1800):
+            return
+        if random.random() < 0.55:
+            amount = random.randint(250, 700)
+            await self.bot.db.add_coins(interaction.guild_id, interaction.user.id, amount)
+            await interaction.response.send_message(
+                f"🕶️ You {random.choice(CRIME_JOBS)} — **+{amount}** {COIN}."
+            )
+            return
+        econ = await self.bot.db.get_econ(interaction.guild_id, interaction.user.id)
+        fine = min(econ["balance"], random.randint(100, 400))
+        if fine:
+            await self.bot.db.add_coins(
+                interaction.guild_id, interaction.user.id, -fine
+            )
+        await interaction.response.send_message(
+            f"🚨 {random.choice(CRIME_FAILS)} — fined **-{fine}** {COIN}."
+        )
+
+    @app_commands.command(
+        name="rob", description="Try to rob another player (1h cooldown, risky)"
+    )
+    @app_commands.describe(target="Who you're robbing")
+    async def rob(self, interaction: discord.Interaction, target: discord.Member) -> None:
+        if target.id == interaction.user.id or target.bot:
+            await interaction.response.send_message(
+                "Robbing yourself? Bold strategy.", ephemeral=True
+            )
+            return
+        target_econ = await self.bot.db.get_econ(interaction.guild_id, target.id)
+        if target_econ["balance"] < 200:
+            await interaction.response.send_message(
+                f"{target.display_name} is broke — not worth the effort.", ephemeral=True
+            )
+            return
+        if not await self._check_cooldown(interaction, "rob", 3600):
+            return
+        if random.random() < 0.5:
+            cut = random.randint(10, 25) / 100
+            amount = min(int(target_econ["balance"] * cut), 25_000)
+            await self.bot.db.add_coins(interaction.guild_id, target.id, -amount)
+            await self.bot.db.add_coins(
+                interaction.guild_id, interaction.user.id, amount
+            )
+            await interaction.response.send_message(
+                f"🦹 {interaction.user.mention} robbed {target.mention} for "
+                f"**{amount:,}** {COIN}!"
+            )
+            return
+        econ = await self.bot.db.get_econ(interaction.guild_id, interaction.user.id)
+        fine = min(econ["balance"], 200)
+        if fine:
+            await self.bot.db.add_coins(interaction.guild_id, interaction.user.id, -fine)
+            await self.bot.db.add_coins(interaction.guild_id, target.id, fine)
+        await interaction.response.send_message(
+            f"👮 {interaction.user.mention} got caught robbing {target.mention} "
+            f"and paid them **{fine}** {COIN} in damages!"
+        )
+
+    @app_commands.command(name="fish", description="Go fishing for coins (10 min cooldown)")
+    async def fish(self, interaction: discord.Interaction) -> None:
+        if not await self._check_cooldown(interaction, "fish", 600):
+            return
+        roll = random.random()
+        if roll < 0.12:
+            await self.bot.db.add_inventory_item(
+                interaction.guild_id, interaction.user.id, "fish"
+            )
+            await interaction.response.send_message(
+                "🎣 You reel in… a 🐟 **Wet Fish**! Added to your inventory."
+            )
+            return
+        if roll < 0.15:
+            await interaction.response.send_message(
+                f"🎣 You reel in… {random.choice(FISH_CATCHES)}. Worthless. **Nothing.**"
+            )
+            return
+        amount = random.randint(20, 150)
+        await self.bot.db.add_coins(interaction.guild_id, interaction.user.id, amount)
+        await interaction.response.send_message(
+            f"🎣 You sell your catch for **+{amount}** {COIN}."
+        )
+
+    @app_commands.command(name="postmeme", description="Post a meme for coins (15 min cooldown)")
+    async def postmeme(self, interaction: discord.Interaction) -> None:
+        if not await self._check_cooldown(interaction, "postmeme", 900):
+            return
+        amount, line = random.choices(
+            MEME_OUTCOMES, weights=[20, 35, 25, 15, 5], k=1
+        )[0]
+        if amount:
+            await self.bot.db.add_coins(interaction.guild_id, interaction.user.id, amount)
+        await interaction.response.send_message(
+            "📸 " + line.format(amount=f"**+{amount}**", coin=COIN)
         )
 
     # ---- scrim betting ----------------------------------------------------

@@ -100,6 +100,14 @@ CREATE TABLE IF NOT EXISTS duels (
     settled       INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS cooldowns (
+    guild_id INTEGER NOT NULL,
+    user_id  INTEGER NOT NULL,
+    action   TEXT    NOT NULL,
+    ts       INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (guild_id, user_id, action)
+);
+
 CREATE TABLE IF NOT EXISTS item_inventory (
     guild_id INTEGER NOT NULL,
     user_id  INTEGER NOT NULL,
@@ -529,6 +537,24 @@ class Database:
     async def settle_duel(self, scrim_id: int) -> None:
         await self.conn.execute(
             "UPDATE duels SET settled = 1 WHERE scrim_id = ?", (scrim_id,)
+        )
+        await self.conn.commit()
+
+    # ---- generic cooldowns ------------------------------------------------
+
+    async def get_cooldown(self, guild_id: int, user_id: int, action: str) -> int:
+        cur = await self.conn.execute(
+            "SELECT ts FROM cooldowns WHERE guild_id = ? AND user_id = ? AND action = ?",
+            (guild_id, user_id, action),
+        )
+        row = await cur.fetchone()
+        return row["ts"] if row else 0
+
+    async def set_cooldown(self, guild_id: int, user_id: int, action: str, ts: int) -> None:
+        await self.conn.execute(
+            "INSERT INTO cooldowns (guild_id, user_id, action, ts) VALUES (?, ?, ?, ?)"
+            " ON CONFLICT(guild_id, user_id, action) DO UPDATE SET ts = ?",
+            (guild_id, user_id, action, ts, ts),
         )
         await self.conn.commit()
 
