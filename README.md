@@ -84,7 +84,9 @@ Set `GUILD_ID` in `.env` to your server's ID during development so slash command
 
 ## Commands
 
-Economy, casino, and stats commands work **both** as slash commands and with the classic `.` prefix. `.help` lists everything. Scrim GUI and admin/config commands are slash-only.
+Economy, casino, scrim, and stats commands work **both** as slash commands and with the classic `.` prefix. `.help` lists everything. Admin/config commands are slash-only.
+
+**Scrim menu.** `.s` (or `/scrims`) opens a button menu: **🎮 Create Scrim** (opens the map/size/time wizard in the same message), **🔄 Refresh**, **📌 Post Hub Panel** (server managers only), and a **🔗 Jump to a scrim** dropdown. Active scrims are listed live with clickable links to their sign-up posts.
 
 **Game menu & betting windows.** `.g` (or `/games`) opens a button menu with **all 10 games pressable on the front screen** (two rows: Slots, Flip, Dice, RPS, Plinko / Mines, Tower, BJ, Baccarat, Roulette) plus Economy, Item Shop, Stats and Inventory. Pressing a game turns that same message into its betting window, with **↩️ Menu** to go back — no extra messages. Typing a game name alone, like `.slots` or `.blackjack`, opens a **betting window**: a styled embed with **½ / ×2** to adjust the bet, **✏️ Amount** for an exact figure, **💰 All In** (with a max-bet confirmation), a dropdown for game options (coinflip side, plinko risk, roulette target…), and a **▶ Play** button. Power users can still bet inline: `.slots 500`, `.roulette 100 17`, `.bj 1k`.
 

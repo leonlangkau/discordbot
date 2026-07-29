@@ -364,7 +364,11 @@ class Prefix(commands.Cog):
         )
         embed.add_field(
             name="🕹️ Menu",
-            value="`.g` — full button menu · `.slots` (no amount) — betting window",
+            value=(
+                "`.g` — games menu (all 10 games as buttons)\n"
+                "`.s` — scrims menu (create, browse, jump)\n"
+                "`.slots` (no amount) — betting window"
+            ),
             inline=False,
         )
         embed.add_field(
@@ -373,7 +377,7 @@ class Prefix(commands.Cog):
                 "`.cf <amt> [h|t]` `.dice <amt>` `.rps <amt> [r|p|s]` `.slots <amt>`\n"
                 "`.roulette <amt> <red|black|even|odd|0-36>`\n"
                 "`.plinko <amt> [low|med|high|extreme]` `.bj <amt>`\n"
-                "`.mines <amt> [1-10]` `.tower <amt>` `.bacc <amt> [p|b|t]`"
+                "`.mines <amt> [1-24]` `.tower <amt>` `.bacc <amt> [p|b|t]`"
             ),
             inline=False,
         )
@@ -383,9 +387,9 @@ class Prefix(commands.Cog):
             inline=False,
         )
         embed.add_field(
-            name="🎮 Scrims & admin (slash only)",
+            name="🎮 Scrims & admin",
             value=(
-                "`/scrim panel` `/scrim create` `/scrim list` — scrim GUI\n"
+                "`.s` — scrim menu · `/scrim create` `/scrim list` `/scrim panel`\n"
                 "`/scrimconfig …` `/security …` `/statuschannel` `/giveaway`"
             ),
             inline=False,

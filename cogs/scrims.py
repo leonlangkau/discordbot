@@ -956,6 +956,159 @@ class PanelView(discord.ui.View):
         self.add_item(PanelButton())
 
 
+def panel_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="💣 CS2 Scrim Hub",
+        description=(
+            "Ready to run a match on our server?\n\n"
+            "Hit **Create Scrim** below and a step-by-step wizard walks you "
+            "through picking the map, team size, and start time. The bot then "
+            "creates private lobby, team text, and voice channels, and posts a "
+            "sign-up announcement where players join with one click.\n\n"
+            "When the host hits **Start Match**, the server connect info is "
+            "posted in the scrim lobby and the map is loaded automatically."
+        ),
+        color=discord.Color.green(),
+    )
+    embed.set_footer(text="Scrims get their own private channels — cleaned up automatically.")
+    return embed
+
+
+# ---------------------------------------------------------------------------
+# `.s` scrims menu — the button-driven front door
+# ---------------------------------------------------------------------------
+
+
+class ScrimsMenu(discord.ui.View):
+    """`.s` menu: create scrims, browse active ones, jump to them."""
+
+    def __init__(self, bot: ScrimBot, guild: discord.Guild, user_id: int) -> None:
+        super().__init__(timeout=600)
+        self.bot = bot
+        self.guild = guild
+        self.user_id = user_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "Open your own scrim menu with `.s`", ephemeral=True
+            )
+            return False
+        return True
+
+    # ---- data -------------------------------------------------------------
+
+    async def active(self) -> list:
+        return await self.bot.db.list_scrims(self.guild.id, ("open", "live"))
+
+    def jump_url(self, scrim) -> str | None:
+        if not scrim["announce_channel_id"] or not scrim["announce_message_id"]:
+            return None
+        return (
+            f"https://discord.com/channels/{self.guild.id}/"
+            f"{scrim['announce_channel_id']}/{scrim['announce_message_id']}"
+        )
+
+    # ---- rendering --------------------------------------------------------
+
+    async def embed(self) -> discord.Embed:
+        scrims = await self.active()
+        embed = discord.Embed(
+            title="💣 Scrims",
+            description=(
+                "**Press a button** — no commands to type.\n\n"
+                "🎮 **Create Scrim** — pick map, team size and start time\n"
+                "📋 **Active Scrims** — who's playing right now\n"
+                "🔗 **Jump** — hop to a scrim's sign-up post to join"
+            ),
+            color=discord.Color.green(),
+        )
+        if scrims:
+            lines = []
+            for s in scrims:
+                players = await self.bot.db.get_players(s["id"])
+                url = self.jump_url(s)
+                title = f"#{s['id']} — {s['game']} {s['team_size']}v{s['team_size']}"
+                lines.append(
+                    f"{'🔴' if s['status'] == 'live' else '🟢'} "
+                    + (f"[{title}]({url})" if url else title)
+                    + f" · {len(players)}/{s['team_size'] * 2} · <@{s['creator_id']}>"
+                )
+            embed.add_field(name=f"Active now ({len(scrims)})", value="\n".join(lines[:10]),
+                            inline=False)
+        else:
+            embed.add_field(name="Active now", value="Nothing running — start one! 🎮",
+                            inline=False)
+        return embed
+
+    async def render(self, interaction: discord.Interaction) -> None:
+        await self.build()
+        await interaction.response.edit_message(embed=await self.embed(), view=self)
+
+    async def build(self) -> None:
+        self.clear_items()
+        create = discord.ui.Button(label="Create Scrim", emoji="🎮",
+                                   style=discord.ButtonStyle.success, row=0)
+        create.callback = self.create_scrim
+        self.add_item(create)
+        refresh = discord.ui.Button(label="Refresh", emoji="🔄",
+                                   style=discord.ButtonStyle.secondary, row=0)
+        refresh.callback = self.render
+        self.add_item(refresh)
+        panel = discord.ui.Button(label="Post Hub Panel", emoji="📌",
+                                  style=discord.ButtonStyle.secondary, row=0)
+        panel.callback = self.post_panel
+        self.add_item(panel)
+
+        scrims = await self.active()
+        if scrims:  # a jump dropdown straight to each sign-up post
+            options = []
+            for s in scrims[:25]:
+                players = await self.bot.db.get_players(s["id"])
+                options.append(discord.SelectOption(
+                    label=f"#{s['id']} — {s['game']} {s['team_size']}v{s['team_size']}"[:100],
+                    description=f"{s['status']} · {len(players)}/{s['team_size'] * 2} players",
+                    value=str(s["id"]),
+                    emoji="🔴" if s["status"] == "live" else "🟢",
+                ))
+            select = discord.ui.Select(placeholder="🔗 Jump to a scrim…",
+                                       options=options, row=1)
+            select.callback = self.jump(select)
+            self.add_item(select)
+
+    # ---- actions ----------------------------------------------------------
+
+    async def create_scrim(self, interaction: discord.Interaction) -> None:
+        wizard = ScrimWizard(self.bot, self.user_id)
+        self.stop()
+        await interaction.response.edit_message(
+            embed=ScrimWizard.make_embed(), view=wizard
+        )
+
+    async def post_panel(self, interaction: discord.Interaction) -> None:
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message(
+                "Only server managers can post the hub panel.", ephemeral=True
+            )
+            return
+        await interaction.channel.send(embed=panel_embed(), view=PanelView())
+        await interaction.response.send_message("Scrim panel posted. 📌", ephemeral=True)
+
+    def jump(self, select: discord.ui.Select):
+        async def callback(interaction: discord.Interaction) -> None:
+            scrim = await self.bot.db.get_scrim(int(select.values[0]))
+            if not scrim:
+                await interaction.response.send_message("That scrim is gone.", ephemeral=True)
+                return
+            url = self.jump_url(scrim)
+            await interaction.response.send_message(
+                f"🔗 Scrim **#{scrim['id']}** — {url}" if url
+                else f"Scrim **#{scrim['id']}** has no sign-up post to jump to.",
+                ephemeral=True,
+            )
+        return callback
+
+
 # ---------------------------------------------------------------------------
 # Slash commands
 # ---------------------------------------------------------------------------
@@ -987,22 +1140,23 @@ class Scrims(commands.Cog):
     )
     @app_commands.default_permissions(manage_guild=True)
     async def panel(self, interaction: discord.Interaction) -> None:
-        embed = discord.Embed(
-            title="💣 CS2 Scrim Hub",
-            description=(
-                "Ready to run a match on our server?\n\n"
-                "Hit **Create Scrim** below and a step-by-step wizard walks you "
-                "through picking the map, team size, and start time. The bot then "
-                "creates private lobby, team text, and voice channels, and posts a "
-                "sign-up announcement where players join with one click.\n\n"
-                "When the host hits **Start Match**, the server connect info is "
-                "posted in the scrim lobby and the map is loaded automatically."
-            ),
-            color=discord.Color.green(),
-        )
-        embed.set_footer(text="Scrims get their own private channels — cleaned up automatically.")
-        await interaction.channel.send(embed=embed, view=PanelView())
+        await interaction.channel.send(embed=panel_embed(), view=PanelView())
         await interaction.response.send_message("Scrim panel posted. 📌", ephemeral=True)
+
+    @commands.command(name="s", aliases=["scrims", "scrim"])
+    async def s_menu(self, ctx: commands.Context) -> None:
+        """`.s` — the scrims menu, all buttons."""
+        if ctx.guild is None:
+            return
+        view = ScrimsMenu(self.bot, ctx.guild, ctx.author.id)
+        await view.build()
+        await ctx.send(embed=await view.embed(), view=view)
+
+    @app_commands.command(name="scrims", description="Open the scrims menu")
+    async def scrims_slash(self, interaction: discord.Interaction) -> None:
+        view = ScrimsMenu(self.bot, interaction.guild, interaction.user.id)
+        await view.build()
+        await interaction.response.send_message(embed=await view.embed(), view=view)
 
     @scrim.command(name="create", description="Open the scrim creation wizard")
     async def create(self, interaction: discord.Interaction) -> None:
