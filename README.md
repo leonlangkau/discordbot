@@ -41,6 +41,14 @@ The channels are private — only players who join the scrim (via buttons on the
 - **Giveaways** — `/giveaway` with a join button and automatic timed draw; coin prizes pay out automatically
 - **Server status** — `/statuschannel` posts an auto-updating embed (map, players, online state) polled from your CS2 server via RCON every 5 minutes
 
+## Security
+
+- **Join/leave logging** — `/security logchannel` picks a channel; every joiner gets a full profile embed (ID, username, display name, account age with new-account warning, badges, avatar, banner, bot flag) and leavers are logged with their roles; joins are also recorded in the database
+- **Anti-nuke** — `/security antinuke enabled:true` watches the audit log for bursts of destructive actions (3+ channel/role deletions or 4+ bans/kicks within 60s) by any member **or bot** and immediately bans the offender (or strips all their roles if banning isn't possible), then reports in the log channel
+- **Whitelist** — `/security whitelist` marks trusted admins that anti-nuke ignores; the server owner and the bot itself are always exempt
+- `/security status` shows the full configuration
+- Needs extra bot permissions: **View Audit Log** and **Ban Members** for full protection
+
 ## Setup
 
 ### 1. Create the Discord application

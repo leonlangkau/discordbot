@@ -99,6 +99,20 @@ CREATE TABLE IF NOT EXISTS duels (
     wager         INTEGER NOT NULL,
     settled       INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS antinuke_whitelist (
+    guild_id INTEGER NOT NULL,
+    user_id  INTEGER NOT NULL,
+    PRIMARY KEY (guild_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS member_log (
+    guild_id  INTEGER NOT NULL,
+    user_id   INTEGER NOT NULL,
+    username  TEXT,
+    joined_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (guild_id, user_id, joined_at)
+);
 """
 
 # Columns added after the initial release; applied via ALTER TABLE on connect.
@@ -111,6 +125,8 @@ MIGRATIONS: dict[str, dict[str, str]] = {
         "rcon_password": "TEXT",
         "status_channel_id": "INTEGER",
         "status_message_id": "INTEGER",
+        "log_channel_id": "INTEGER",
+        "antinuke": "INTEGER NOT NULL DEFAULT 0",
     },
     "player_stats": {
         "elo": "INTEGER NOT NULL DEFAULT 1000",
@@ -505,6 +521,38 @@ class Database:
     async def settle_duel(self, scrim_id: int) -> None:
         await self.conn.execute(
             "UPDATE duels SET settled = 1 WHERE scrim_id = ?", (scrim_id,)
+        )
+        await self.conn.commit()
+
+    # ---- security ---------------------------------------------------------
+
+    async def add_whitelist(self, guild_id: int, user_id: int) -> None:
+        await self.conn.execute(
+            "INSERT INTO antinuke_whitelist (guild_id, user_id) VALUES (?, ?)"
+            " ON CONFLICT DO NOTHING",
+            (guild_id, user_id),
+        )
+        await self.conn.commit()
+
+    async def remove_whitelist(self, guild_id: int, user_id: int) -> bool:
+        cur = await self.conn.execute(
+            "DELETE FROM antinuke_whitelist WHERE guild_id = ? AND user_id = ?",
+            (guild_id, user_id),
+        )
+        await self.conn.commit()
+        return cur.rowcount > 0
+
+    async def get_whitelist(self, guild_id: int) -> set[int]:
+        cur = await self.conn.execute(
+            "SELECT user_id FROM antinuke_whitelist WHERE guild_id = ?", (guild_id,)
+        )
+        return {row["user_id"] for row in await cur.fetchall()}
+
+    async def log_member(self, guild_id: int, user_id: int, username: str) -> None:
+        await self.conn.execute(
+            "INSERT OR REPLACE INTO member_log (guild_id, user_id, username)"
+            " VALUES (?, ?, ?)",
+            (guild_id, user_id, username),
         )
         await self.conn.commit()
 

@@ -27,6 +27,7 @@ COGS = (
     "cogs.duels",
     "cogs.giveaways",
     "cogs.status",
+    "cogs.security",
 )
 
 
