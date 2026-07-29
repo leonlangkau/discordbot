@@ -34,7 +34,7 @@ The channels are private — only players who join the scrim (via buttons on the
 - **Coins** — `/balance`, `/daily` (250, 20h cooldown), `/work` (50–150, 1h), `/pay`; playing scrims pays coins and XP, winning pays more
 - **Elo** — team-based Elo (K=32) moves with every reported scrim; ranks from Silver to Global Elite
 - **XP & levels** — chat and scrims grant XP, with level-up announcements
-- **Casino** — `/coinflip`, `/dice`, `/rps`, `/slots`, `/roulette`, `/plinko`, `/blackjack` (hit/stand buttons), `/mines` (tile grid + cash out), `/tower` (climb 8 floors), `/baccarat` (full third-card rules)
+- **Casino** — `/coinflip`, `/dice`, `/rps`, `/slots`, `/roulette`, `/plinko` (4 risk levels, up to 60x), `/blackjack` (hit/stand buttons), `/mines` (tile grid + cash out), `/tower` (climb 8 floors), `/baccarat` (full third-card rules)
 - **Scrim betting** — `/bet` on Team A/B while a scrim is open; pays 2x, refunded on draws and cancels; players can't bet on their own match
 - **Duels** — `/duel @user wager` creates a 1v1 scrim with both wagers escrowed; winner takes the pot on the reported score
 - **Shop** — `/shop` with a buy menu; admins stock roles via `/shopadmin add`, grant coins with `/shopadmin give`

@@ -526,20 +526,45 @@ class Casino(commands.Cog):
             f"🎡 The ball lands on {color} **{spun}** — {outcome}"
         )
 
+    PLINKO_TABLES = {
+        # 9 buckets for 8 rows; edges are rare (2/256), the center is common (70/256)
+        "low": [3, 1.5, 1.1, 0.9, 0.7, 0.9, 1.1, 1.5, 3],
+        "medium": [7, 2.5, 1.3, 0.8, 0.4, 0.8, 1.3, 2.5, 7],
+        "high": [15, 4, 1.5, 0.5, 0.2, 0.5, 1.5, 4, 15],
+        "extreme": [60, 3, 0.8, 0.2, 0, 0.2, 0.8, 3, 60],
+    }
+
     @app_commands.command(name="plinko", description="Drop a ball down the plinko board")
-    @app_commands.describe(amount="Coins to bet")
-    async def plinko(self, interaction: discord.Interaction, amount: Bet) -> None:
+    @app_commands.describe(amount="Coins to bet", risk="Higher risk: bigger edges, brutal middle")
+    @app_commands.choices(
+        risk=[
+            app_commands.Choice(name="🟢 Low (max 3x)", value="low"),
+            app_commands.Choice(name="🟡 Medium (max 7x)", value="medium"),
+            app_commands.Choice(name="🟠 High (max 15x)", value="high"),
+            app_commands.Choice(name="🔴 Extreme (max 60x)", value="extreme"),
+        ]
+    )
+    async def plinko(
+        self,
+        interaction: discord.Interaction,
+        amount: Bet,
+        risk: app_commands.Choice[str] | None = None,
+    ) -> None:
         if not await take_bet(self.bot, interaction, amount):
             return
-        mults = [5.6, 2.1, 1.1, 0.7, 0.4, 0.7, 1.1, 2.1, 5.6]
+        risk_key = risk.value if risk else "medium"
+        mults = self.PLINKO_TABLES[risk_key]
         bucket = sum(random.randint(0, 1) for _ in range(8))
         mult = mults[bucket]
         payout = math.floor(amount * mult)
         if payout:
             await self.bot.db.add_coins(interaction.guild_id, interaction.user.id, payout)
-        row = " ".join(f"[{m}x]" if i == bucket else f" {m}x " for i, m in enumerate(mults))
+        row = " ".join(
+            f"[{m}x]" if i == bucket else f" {m}x " for i, m in enumerate(mults)
+        )
         await interaction.response.send_message(
-            f"🔻 The ball bounces into **×{mult}**!\n`{row}`\n{result_line(payout - amount)}"
+            f"🔻 **Plinko ({risk_key})** — the ball bounces into **×{mult}**!\n"
+            f"`{row}`\n{result_line(payout - amount)}"
         )
 
     @app_commands.command(name="blackjack", description="Play a hand of blackjack")
