@@ -100,6 +100,14 @@ CREATE TABLE IF NOT EXISTS duels (
     settled       INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS item_inventory (
+    guild_id INTEGER NOT NULL,
+    user_id  INTEGER NOT NULL,
+    item_key TEXT    NOT NULL,
+    qty      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (guild_id, user_id, item_key)
+);
+
 CREATE TABLE IF NOT EXISTS antinuke_whitelist (
     guild_id INTEGER NOT NULL,
     user_id  INTEGER NOT NULL,
@@ -523,6 +531,36 @@ class Database:
             "UPDATE duels SET settled = 1 WHERE scrim_id = ?", (scrim_id,)
         )
         await self.conn.commit()
+
+    # ---- item inventory ---------------------------------------------------
+
+    async def add_inventory_item(
+        self, guild_id: int, user_id: int, item_key: str, qty: int = 1
+    ) -> None:
+        await self.conn.execute(
+            "INSERT INTO item_inventory (guild_id, user_id, item_key, qty)"
+            " VALUES (?, ?, ?, ?)"
+            " ON CONFLICT(guild_id, user_id, item_key) DO UPDATE SET qty = qty + ?",
+            (guild_id, user_id, item_key, qty, qty),
+        )
+        await self.conn.commit()
+
+    async def get_inventory(self, guild_id: int, user_id: int) -> list[aiosqlite.Row]:
+        cur = await self.conn.execute(
+            "SELECT item_key, qty FROM item_inventory"
+            " WHERE guild_id = ? AND user_id = ? AND qty > 0 ORDER BY rowid",
+            (guild_id, user_id),
+        )
+        return await cur.fetchall()
+
+    async def get_item_qty(self, guild_id: int, user_id: int, item_key: str) -> int:
+        cur = await self.conn.execute(
+            "SELECT qty FROM item_inventory"
+            " WHERE guild_id = ? AND user_id = ? AND item_key = ?",
+            (guild_id, user_id, item_key),
+        )
+        row = await cur.fetchone()
+        return row["qty"] if row else 0
 
     # ---- security ---------------------------------------------------------
 

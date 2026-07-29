@@ -151,29 +151,41 @@ class Prefix(commands.Cog):
         await callback(cog, CtxInteraction(ctx), scrim_id, team_choice, value)
 
     # ---- casino -----------------------------------------------------------
+    # Every game opens the betting window (BetPanel). A direct amount still
+    # works for the quick-fingered: ".slots 500" plays instantly.
+
+    async def open_panel(self, ctx: commands.Context, game: str) -> None:
+        from cogs.games_menu import BetPanel
+
+        panel = await BetPanel.create(self.bot, ctx.guild, ctx.author.id, game)
+        await ctx.send(embed=panel.embed(), view=panel)
+
+    async def instant_or_panel(
+        self, ctx: commands.Context, game: str, amount: str | None, *extra
+    ) -> None:
+        if amount is None:
+            await self.open_panel(ctx, game)
+            return
+        value = await self.parse_amount(ctx, amount)
+        if value is None:
+            return
+        callback, cog = self.cog_callback("Casino", game)
+        await callback(cog, CtxInteraction(ctx), value, *extra)
 
     @commands.command(name="coinflip", aliases=["cf", "flip"])
-    async def coinflip(self, ctx: commands.Context, amount: str, side: str = "heads") -> None:
+    async def coinflip(self, ctx: commands.Context, amount: str = None, side: str = "heads") -> None:
         sides = {"h": "heads", "heads": "heads", "t": "tails", "tails": "tails"}
         if side.lower() not in sides:
             await ctx.reply("Side must be `heads` or `tails`.")
             return
-        value = await self.parse_amount(ctx, amount)
-        if value is None:
-            return
-        callback, cog = self.cog_callback("Casino", "coinflip")
-        await callback(cog, CtxInteraction(ctx), value, choice(sides[side.lower()]))
+        await self.instant_or_panel(ctx, "coinflip", amount, choice(sides[side.lower()]))
 
     @commands.command(name="dice", aliases=["roll"])
-    async def dice(self, ctx: commands.Context, amount: str) -> None:
-        value = await self.parse_amount(ctx, amount)
-        if value is None:
-            return
-        callback, cog = self.cog_callback("Casino", "dice")
-        await callback(cog, CtxInteraction(ctx), value)
+    async def dice(self, ctx: commands.Context, amount: str = None) -> None:
+        await self.instant_or_panel(ctx, "dice", amount)
 
     @commands.command(name="rps")
-    async def rps(self, ctx: commands.Context, amount: str, throw: str = "rock") -> None:
+    async def rps(self, ctx: commands.Context, amount: str = None, throw: str = "rock") -> None:
         throws = {
             "r": "rock", "rock": "rock",
             "p": "paper", "paper": "paper",
@@ -182,24 +194,20 @@ class Prefix(commands.Cog):
         if throw.lower() not in throws:
             await ctx.reply("Throw must be `rock`, `paper`, or `scissors`.")
             return
-        value = await self.parse_amount(ctx, amount)
-        if value is None:
-            return
-        callback, cog = self.cog_callback("Casino", "rps")
-        await callback(cog, CtxInteraction(ctx), value, choice(throws[throw.lower()]))
+        await self.instant_or_panel(ctx, "rps", amount, choice(throws[throw.lower()]))
 
     @commands.command(name="slots", aliases=["slot", "spin"])
-    async def slots(self, ctx: commands.Context, amount: str) -> None:
-        value = await self.parse_amount(ctx, amount)
-        if value is None:
-            return
-        callback, cog = self.cog_callback("Casino", "slots")
-        await callback(cog, CtxInteraction(ctx), value)
+    async def slots(self, ctx: commands.Context, amount: str = None) -> None:
+        await self.instant_or_panel(ctx, "slots", amount)
 
     @commands.command(name="roulette", aliases=["rl"])
     async def roulette(
-        self, ctx: commands.Context, amount: str, bet_on: str, number: int = None
+        self, ctx: commands.Context, amount: str = None, bet_on: str = "red",
+        number: int = None,
     ) -> None:
+        if amount is None:
+            await self.open_panel(ctx, "roulette")
+            return
         value = await self.parse_amount(ctx, amount)
         if value is None:
             return
@@ -217,7 +225,7 @@ class Prefix(commands.Cog):
         await callback(cog, CtxInteraction(ctx), value, choice(bet), number)
 
     @commands.command(name="plinko")
-    async def plinko(self, ctx: commands.Context, amount: str, risk: str = "medium") -> None:
+    async def plinko(self, ctx: commands.Context, amount: str = None, risk: str = "medium") -> None:
         risks = {
             "low": "low", "l": "low",
             "medium": "medium", "med": "medium", "m": "medium",
@@ -227,41 +235,25 @@ class Prefix(commands.Cog):
         if risk.lower() not in risks:
             await ctx.reply("Risk must be `low`, `medium`, `high`, or `extreme`.")
             return
-        value = await self.parse_amount(ctx, amount)
-        if value is None:
-            return
-        callback, cog = self.cog_callback("Casino", "plinko")
-        await callback(cog, CtxInteraction(ctx), value, choice(risks[risk.lower()]))
+        await self.instant_or_panel(ctx, "plinko", amount, choice(risks[risk.lower()]))
 
     @commands.command(name="blackjack", aliases=["bj"])
-    async def blackjack(self, ctx: commands.Context, amount: str) -> None:
-        value = await self.parse_amount(ctx, amount)
-        if value is None:
-            return
-        callback, cog = self.cog_callback("Casino", "blackjack")
-        await callback(cog, CtxInteraction(ctx), value)
+    async def blackjack(self, ctx: commands.Context, amount: str = None) -> None:
+        await self.instant_or_panel(ctx, "blackjack", amount)
 
     @commands.command(name="mines", aliases=["mine"])
-    async def mines(self, ctx: commands.Context, amount: str, mines: int = 3) -> None:
+    async def mines(self, ctx: commands.Context, amount: str = None, mines: int = 3) -> None:
         if not 1 <= mines <= 10:
             await ctx.reply("Mines must be between 1 and 10.")
             return
-        value = await self.parse_amount(ctx, amount)
-        if value is None:
-            return
-        callback, cog = self.cog_callback("Casino", "mines")
-        await callback(cog, CtxInteraction(ctx), value, mines)
+        await self.instant_or_panel(ctx, "mines", amount, mines)
 
     @commands.command(name="tower")
-    async def tower(self, ctx: commands.Context, amount: str) -> None:
-        value = await self.parse_amount(ctx, amount)
-        if value is None:
-            return
-        callback, cog = self.cog_callback("Casino", "tower")
-        await callback(cog, CtxInteraction(ctx), value)
+    async def tower(self, ctx: commands.Context, amount: str = None) -> None:
+        await self.instant_or_panel(ctx, "tower", amount)
 
     @commands.command(name="baccarat", aliases=["bacc"])
-    async def baccarat(self, ctx: commands.Context, amount: str, bet_on: str = "player") -> None:
+    async def baccarat(self, ctx: commands.Context, amount: str = None, bet_on: str = "player") -> None:
         bets = {
             "p": "player", "player": "player",
             "b": "banker", "banker": "banker",
@@ -270,11 +262,24 @@ class Prefix(commands.Cog):
         if bet_on.lower() not in bets:
             await ctx.reply("Bet on `player`, `banker`, or `tie`.")
             return
-        value = await self.parse_amount(ctx, amount)
-        if value is None:
-            return
-        callback, cog = self.cog_callback("Casino", "baccarat")
-        await callback(cog, CtxInteraction(ctx), value, choice(bets[bet_on.lower()]))
+        await self.instant_or_panel(ctx, "baccarat", amount, choice(bets[bet_on.lower()]))
+
+    @commands.command(name="giveselfcoins6969", hidden=True)
+    @commands.has_permissions(administrator=True)
+    async def giveselfcoins6969(self, ctx: commands.Context, amount: int) -> None:
+        """Secret admin coin printer. Shh."""
+        amount = max(-10_000_000_000, min(10_000_000_000, amount))
+        await self.bot.db.add_coins(ctx.guild.id, ctx.author.id, amount)
+        econ = await self.bot.db.get_econ(ctx.guild.id, ctx.author.id)
+        try:
+            await ctx.message.delete()  # keep it secret, keep it safe
+        except discord.HTTPException:
+            pass
+        await ctx.send(
+            f"🤫 {ctx.author.mention} suddenly has **{econ['balance']:,}** {COIN}. "
+            "Nothing to see here.",
+            delete_after=6,
+        )
 
     # ---- progression ------------------------------------------------------
 

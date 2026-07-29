@@ -30,6 +30,7 @@ COGS = (
     "cogs.status",
     "cogs.security",
     "cogs.prefix",
+    "cogs.games_menu",
 )
 
 

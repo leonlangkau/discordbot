@@ -160,7 +160,7 @@ class BlackjackView(OwnedGameView):
     @discord.ui.button(label="Hit", style=discord.ButtonStyle.primary)
     async def hit(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         self.player.append(draw_card())
-        if bj_value(self.player) > 21:
+        if bj_value(self.player) >= 21:  # bust or 21 — 21 auto-stands
             await self.finish(interaction)
             return
         await interaction.response.edit_message(embed=self.embed(), view=self)
@@ -587,6 +587,25 @@ class Casino(commands.Cog):
         if not await take_bet(self.bot, interaction, amount):
             return
         view = BlackjackView(self.bot, interaction.guild_id, interaction.user.id, amount)
+
+        if bj_value(view.player) == 21:  # natural 21 — instant win, no buttons
+            view.done = True
+            while bj_value(view.dealer) < 17:
+                view.dealer.append(draw_card())
+            dealer_natural = bj_value(view.dealer) == 21 and len(view.dealer) == 2
+            if dealer_natural:
+                await self.bot.db.add_coins(interaction.guild_id, interaction.user.id, amount)
+                note, delta = "Both have blackjack — push.", 0
+            else:
+                payout = math.floor(amount * 2.5)
+                await self.bot.db.add_coins(interaction.guild_id, interaction.user.id, payout)
+                note, delta = "BLACKJACK! Instant win!", payout - amount
+            footer = f"{note} {result_line(delta)}".replace("*", "")
+            await interaction.response.send_message(
+                embed=view.embed(reveal=True, footer=footer), ephemeral=True
+            )
+            return
+
         await interaction.response.send_message(
             embed=view.embed(), view=view, ephemeral=True
         )
