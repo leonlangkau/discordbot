@@ -148,6 +148,13 @@ MIGRATIONS: dict[str, dict[str, str]] = {
         "elo": "INTEGER NOT NULL DEFAULT 1000",
         "xp": "INTEGER NOT NULL DEFAULT 0",
     },
+    "member_log": {
+        "display_name": "TEXT",
+        "account_created": "TEXT",
+        "invite_code": "TEXT",
+        "inviter_id": "INTEGER",
+        "is_bot": "INTEGER NOT NULL DEFAULT 0",
+    },
 }
 
 
@@ -612,13 +619,56 @@ class Database:
         )
         return {row["user_id"] for row in await cur.fetchall()}
 
-    async def log_member(self, guild_id: int, user_id: int, username: str) -> None:
+    async def log_member(
+        self,
+        guild_id: int,
+        user_id: int,
+        username: str,
+        *,
+        display_name: str | None = None,
+        account_created: str | None = None,
+        invite_code: str | None = None,
+        inviter_id: int | None = None,
+        is_bot: bool = False,
+    ) -> int:
+        """Record a join and return how many times this user had joined before.
+
+        The prior count is read before the insert so callers can't get the
+        ordering wrong and mistake a first join for a rejoin.
+        """
+        cur = await self.conn.execute(
+            "SELECT COUNT(*) AS n FROM member_log WHERE guild_id = ? AND user_id = ?",
+            (guild_id, user_id),
+        )
+        previous = (await cur.fetchone())["n"]
         await self.conn.execute(
-            "INSERT OR REPLACE INTO member_log (guild_id, user_id, username)"
-            " VALUES (?, ?, ?)",
-            (guild_id, user_id, username),
+            "INSERT OR REPLACE INTO member_log"
+            " (guild_id, user_id, username, display_name, account_created,"
+            "  invite_code, inviter_id, is_bot)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                guild_id,
+                user_id,
+                username,
+                display_name,
+                account_created,
+                invite_code,
+                inviter_id,
+                int(is_bot),
+            ),
         )
         await self.conn.commit()
+        return previous
+
+    async def member_join_history(
+        self, guild_id: int, user_id: int, limit: int = 5
+    ) -> list[aiosqlite.Row]:
+        cur = await self.conn.execute(
+            "SELECT * FROM member_log WHERE guild_id = ? AND user_id = ?"
+            " ORDER BY joined_at DESC LIMIT ?",
+            (guild_id, user_id, limit),
+        )
+        return await cur.fetchall()
 
     # ---- config -----------------------------------------------------------
 

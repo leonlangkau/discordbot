@@ -44,11 +44,13 @@ The channels are private — only players who join the scrim (via buttons on the
 
 ## Security
 
-- **Join/leave logging** — `/security logchannel` picks a channel; every joiner gets a full profile embed (ID, username, display name, account age with new-account warning, badges, avatar, banner, bot flag) and leavers are logged with their roles; joins are also recorded in the database
+- **Join/leave logging to `#bot-logs`** — every joiner gets a full profile embed posted to a **`#bot-logs`** channel. No setup needed: the bot uses an existing `#bot-logs` if you have one, otherwise it creates a private one (hidden from `@everyone`) the first time someone joins. Use `/security logchannel` to point logs somewhere else, run it with no channel to go back to `#bot-logs`, or `/security logchannel disable:true` to turn logging off.
+- **What gets logged on a join** — username, display name, ID, account creation date with a human-readable age and a ⚠️ warning on accounts under 7 days old, member count, bot/system/user type, membership-screening status, badges, avatar and banner links, accent color, **which invite they used and who created it**, and a ⚠️ **rejoin** notice if they've been in the server before. Leavers are logged with their roles and how long they stayed. Every join is also written to the database with its invite code and inviter.
+- **Invite tracking** needs the **Manage Server** permission — the bot snapshots invite use counts and diffs them on each join to work out which link was used (including one-time invites that get consumed on use). Without the permission everything else still logs, and the embed says the invite couldn't be determined.
 - **Anti-nuke** — `/security antinuke enabled:true` watches the audit log for bursts of destructive actions (3+ channel/role deletions or 4+ bans/kicks within 60s) by any member **or bot** and immediately bans the offender (or strips all their roles if banning isn't possible), then reports in the log channel
 - **Whitelist** — `/security whitelist` marks trusted admins that anti-nuke ignores; the server owner and the bot itself are always exempt
-- `/security status` shows the full configuration
-- Needs extra bot permissions: **View Audit Log** and **Ban Members** for full protection
+- `/security status` shows the full configuration, including whether invite tracking is active
+- Needs extra bot permissions: **View Audit Log** and **Ban Members** for full protection, **Manage Channels** to auto-create `#bot-logs`, and **Manage Server** for invite tracking
 
 ## Web admin panel
 

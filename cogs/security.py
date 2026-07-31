@@ -1,5 +1,9 @@
 """Security: full join/leave logging and anti-nuke protection.
 
+Joins are logged in full to a #bot-logs channel — identity, account age,
+badges, avatar/banner, and which invite they came in on. The channel is
+found (or created) automatically; /security logchannel overrides it.
+
 Anti-nuke watches the audit log for bursts of destructive actions
 (channel/role deletions, bans, kicks). Anyone who crosses a threshold —
 human or bot — is stopped: banned if possible, otherwise stripped of
@@ -8,8 +12,11 @@ roles. The server owner, the bot itself, and whitelisted users are exempt.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import time
 from collections import defaultdict, deque
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -20,6 +27,14 @@ from discord.ext import commands
 if TYPE_CHECKING:
     from bot import ScrimBot
 
+log = logging.getLogger("scrimbot.security")
+
+# Fallback channel used when no log channel has been configured explicitly.
+DEFAULT_LOG_CHANNEL = "bot-logs"
+# Stored in log_channel_id to mean "an admin turned logging off on purpose",
+# as distinct from NULL, which means "not configured, use the default".
+LOGGING_DISABLED = 0
+
 # action -> (max actions, within seconds)
 THRESHOLDS = {
     "channel_delete": (10, 60),
@@ -28,6 +43,41 @@ THRESHOLDS = {
     "kick": (8, 60),
 }
 PUNISH_COOLDOWN = 300  # don't re-punish the same actor for 5 minutes
+NEW_ACCOUNT_DAYS = 7  # younger than this gets flagged in the embed
+
+
+@dataclass(frozen=True)
+class InviteUse:
+    """What we know about the invite a member joined on.
+
+    Kept separate from discord.Invite because an invite that hits its use
+    limit is deleted immediately — by the time we look, the only record of
+    it is our own snapshot.
+    """
+
+    code: str
+    uses: int
+    inviter_id: int | None = None
+    inviter_name: str | None = None
+    spent: bool = False
+
+    @classmethod
+    def from_invite(cls, invite: discord.Invite) -> InviteUse:
+        return cls(
+            code=invite.code,
+            uses=invite.uses or 0,
+            inviter_id=invite.inviter.id if invite.inviter else None,
+            inviter_name=str(invite.inviter) if invite.inviter else None,
+        )
+
+    def exhausted(self) -> InviteUse:
+        """The same invite, one use later, now deleted for hitting its limit."""
+        return replace(self, uses=self.uses + 1, spent=True)
+
+    def describe_inviter(self) -> str:
+        if self.inviter_id is None:
+            return "unknown"
+        return f"<@{self.inviter_id}> (`{self.inviter_name}` / `{self.inviter_id}`)"
 
 
 def describe_flags(user: discord.User | discord.Member) -> str:
@@ -35,43 +85,101 @@ def describe_flags(user: discord.User | discord.Member) -> str:
     return ", ".join(flags) if flags else "none"
 
 
-async def build_join_embed(bot: ScrimBot, member: discord.Member) -> discord.Embed:
+def humanize_age(created: datetime) -> str:
+    delta = datetime.now(timezone.utc) - created
+    days = delta.days
+    if days >= 365:
+        return f"{days // 365}y {days % 365}d old"
+    if days >= 1:
+        return f"{days}d old"
+    return f"{delta.seconds // 3600}h old"
+
+
+async def build_join_embed(
+    bot: ScrimBot,
+    member: discord.Member,
+    *,
+    invite: InviteUse | None = None,
+    previous_joins: int = 0,
+) -> discord.Embed:
     created = member.created_at
     age_days = (datetime.now(timezone.utc) - created).days
+    new_account = age_days < NEW_ACCOUNT_DAYS
     embed = discord.Embed(
         title="📥 Member joined",
-        color=discord.Color.green() if age_days >= 7 else discord.Color.orange(),
+        description=f"{member.mention} — `{member.id}`",
+        color=discord.Color.orange() if new_account else discord.Color.green(),
         timestamp=datetime.now(timezone.utc),
     )
     embed.set_thumbnail(url=member.display_avatar.url)
-    embed.add_field(name="User", value=f"{member.mention}\n`{member}`", inline=True)
-    embed.add_field(name="ID", value=f"`{member.id}`", inline=True)
+    embed.add_field(name="Username", value=f"`{member}`", inline=True)
     embed.add_field(
         name="Display name", value=member.global_name or member.name, inline=True
     )
+    embed.add_field(name="ID", value=f"`{member.id}`", inline=True)
     embed.add_field(
         name="Account created",
-        value=f"<t:{int(created.timestamp())}:F>\n(<t:{int(created.timestamp())}:R>)",
+        value=(
+            f"<t:{int(created.timestamp())}:F>\n"
+            f"<t:{int(created.timestamp())}:R> — {humanize_age(created)}"
+        ),
+        inline=False,
+    )
+    embed.add_field(name="Member #", value=str(member.guild.member_count), inline=True)
+    embed.add_field(
+        name="Account type",
+        value="🤖 bot" if member.bot else ("⚙️ system" if member.system else "👤 user"),
         inline=True,
     )
     embed.add_field(
-        name="Member #", value=str(member.guild.member_count), inline=True
+        name="Screening",
+        value="⏳ pending" if member.pending else "✅ passed",
+        inline=True,
     )
-    embed.add_field(name="Bot", value="🤖 yes" if member.bot else "no", inline=True)
+
+    if invite is not None:
+        spent_note = " — *hit its use limit and was deleted*" if invite.spent else ""
+        embed.add_field(
+            name="Invite used",
+            value=(
+                f"`{invite.code}` — {invite.uses} use(s){spent_note}\n"
+                f"Created by {invite.describe_inviter()}"
+            ),
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="Invite used",
+            value="*couldn't determine* (needs **Manage Server**, or a vanity/one-time invite)",
+            inline=False,
+        )
+
+    if previous_joins:
+        embed.add_field(
+            name="⚠️ Rejoin",
+            value=f"This user has joined **{previous_joins}x** before.",
+            inline=False,
+        )
+
     embed.add_field(name="Badges", value=describe_flags(member), inline=False)
-    embed.add_field(name="Avatar", value=f"[link]({member.display_avatar.url})", inline=True)
+    embed.add_field(
+        name="Avatar", value=f"[link]({member.display_avatar.url})", inline=True
+    )
 
     # Banner and accent color are only present on a full user fetch.
     try:
         full_user = await bot.fetch_user(member.id)
         if full_user.banner:
+            embed.add_field(
+                name="Banner", value=f"[link]({full_user.banner.url})", inline=True
+            )
             embed.set_image(url=full_user.banner.url)
-        if full_user.accent_color:
+        if full_user.accent_color and not new_account:
             embed.color = full_user.accent_color
     except discord.HTTPException:
         pass
 
-    if age_days < 7:
+    if new_account:
         embed.set_footer(text=f"⚠️ New account — created {age_days} day(s) ago")
     return embed
 
@@ -84,29 +192,150 @@ class Security(commands.Cog):
         # (guild_id, user_id, action) -> deque[timestamp]
         self._actions: dict[tuple[int, int, str], deque[float]] = defaultdict(deque)
         self._punished: dict[tuple[int, int], float] = {}
+        # guild_id -> {invite code: snapshot}, diffed on join to see which was used
+        self._invites: dict[int, dict[str, InviteUse]] = {}
+        self._channel_locks: dict[int, asyncio.Lock] = {}
+
+    # ---- log channel ------------------------------------------------------
+
+    async def _log_channel(self, guild: discord.Guild) -> discord.TextChannel | None:
+        """Resolve the log channel: configured one, else #bot-logs, else create it."""
+        config = await self.bot.db.get_config(guild.id)
+        if config and config["log_channel_id"] == LOGGING_DISABLED:
+            return None
+        if config and config["log_channel_id"]:
+            channel = guild.get_channel(config["log_channel_id"])
+            if channel is not None:
+                return channel
+            # Configured channel was deleted — fall through and re-resolve.
+
+        # One creator at a time per guild, or simultaneous joins race and we
+        # end up with several #bot-logs channels.
+        lock = self._channel_locks.setdefault(guild.id, asyncio.Lock())
+        async with lock:
+            existing = discord.utils.get(guild.text_channels, name=DEFAULT_LOG_CHANNEL)
+            if existing is not None:
+                await self.bot.db.set_config(guild.id, log_channel_id=existing.id)
+                return existing
+
+            if not guild.me.guild_permissions.manage_channels:
+                log.warning(
+                    "No #%s in guild %s and I lack Manage Channels to create it.",
+                    DEFAULT_LOG_CHANNEL,
+                    guild.id,
+                )
+                return None
+            try:
+                created = await guild.create_text_channel(
+                    DEFAULT_LOG_CHANNEL,
+                    overwrites={
+                        guild.default_role: discord.PermissionOverwrite(
+                            read_messages=False
+                        ),
+                        guild.me: discord.PermissionOverwrite(
+                            read_messages=True, send_messages=True, embed_links=True
+                        ),
+                    },
+                    reason="Audit log channel for member join/leave logging",
+                    topic="Member join/leave and security logs.",
+                )
+            except discord.HTTPException:
+                log.exception("Couldn't create #%s in guild %s", DEFAULT_LOG_CHANNEL, guild.id)
+                return None
+            await self.bot.db.set_config(guild.id, log_channel_id=created.id)
+            return created
+
+    # ---- invite tracking --------------------------------------------------
+
+    async def _cache_invites(self, guild: discord.Guild) -> None:
+        """Snapshot invite state so a join can be attributed to one."""
+        try:
+            self._invites[guild.id] = {
+                inv.code: InviteUse.from_invite(inv) for inv in await guild.invites()
+            }
+        except (discord.Forbidden, discord.HTTPException):
+            # Needs Manage Server; without it we just can't attribute invites.
+            self._invites[guild.id] = {}
+
+    async def _consume_invite(self, guild: discord.Guild) -> InviteUse | None:
+        """Diff invite uses against the cached snapshot to find the one just used."""
+        before = self._invites.get(guild.id, {})
+        try:
+            current = await guild.invites()
+        except (discord.Forbidden, discord.HTTPException):
+            return None
+
+        used = next(
+            (
+                InviteUse.from_invite(inv)
+                for inv in current
+                if (inv.uses or 0) > (before[inv.code].uses if inv.code in before else 0)
+            ),
+            None,
+        )
+        if used is None:
+            # A max-use invite is deleted the moment it's exhausted, so it's gone
+            # from `current` entirely. The snapshot is the only record of it left.
+            spent = set(before) - {inv.code for inv in current}
+            if len(spent) == 1:
+                used = before[spent.pop()].exhausted()
+
+        self._invites[guild.id] = {
+            inv.code: InviteUse.from_invite(inv) for inv in current
+        }
+        return used
+
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        for guild in self.bot.guilds:
+            await self._cache_invites(guild)
+
+    @commands.Cog.listener()
+    async def on_guild_join(self, guild: discord.Guild) -> None:
+        await self._cache_invites(guild)
+
+    @commands.Cog.listener()
+    async def on_invite_create(self, invite: discord.Invite) -> None:
+        if invite.guild:
+            self._invites.setdefault(invite.guild.id, {})[invite.code] = (
+                InviteUse.from_invite(invite)
+            )
+
+    @commands.Cog.listener()
+    async def on_invite_delete(self, invite: discord.Invite) -> None:
+        if invite.guild:
+            self._invites.get(invite.guild.id, {}).pop(invite.code, None)
 
     # ---- join / leave logging --------------------------------------------
 
-    async def _log_channel(self, guild_id: int) -> discord.TextChannel | None:
-        config = await self.bot.db.get_config(guild_id)
-        if not config or not config["log_channel_id"]:
-            return None
-        return self.bot.get_channel(config["log_channel_id"])
-
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member) -> None:
-        await self.bot.db.log_member(member.guild.id, member.id, str(member))
-        channel = await self._log_channel(member.guild.id)
+        invite = await self._consume_invite(member.guild)
+        previous_joins = await self.bot.db.log_member(
+            member.guild.id,
+            member.id,
+            str(member),
+            display_name=member.global_name or member.name,
+            account_created=member.created_at.isoformat(),
+            invite_code=invite.code if invite else None,
+            inviter_id=invite.inviter_id if invite else None,
+            is_bot=member.bot,
+        )
+        channel = await self._log_channel(member.guild)
         if channel is None:
             return
         try:
-            await channel.send(embed=await build_join_embed(self.bot, member))
+            await channel.send(
+                embed=await build_join_embed(
+                    self.bot, member, invite=invite, previous_joins=previous_joins
+                )
+            )
         except discord.HTTPException:
-            pass
+            log.exception("Failed to post join log for %s", member.id)
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member) -> None:
-        channel = await self._log_channel(member.guild.id)
+        channel = await self._log_channel(member.guild)
         if channel is None:
             return
         roles = [r.mention for r in member.roles if r != member.guild.default_role]
@@ -118,11 +347,19 @@ class Security(commands.Cog):
         embed.set_thumbnail(url=member.display_avatar.url)
         embed.add_field(name="User", value=f"`{member}`", inline=True)
         embed.add_field(name="ID", value=f"`{member.id}`", inline=True)
+        embed.add_field(
+            name="Account created",
+            value=f"<t:{int(member.created_at.timestamp())}:R>",
+            inline=True,
+        )
         if member.joined_at:
             embed.add_field(
                 name="Was member since",
-                value=f"<t:{int(member.joined_at.timestamp())}:R>",
-                inline=True,
+                value=(
+                    f"<t:{int(member.joined_at.timestamp())}:F>\n"
+                    f"<t:{int(member.joined_at.timestamp())}:R>"
+                ),
+                inline=False,
             )
         embed.add_field(
             name="Roles", value=" ".join(roles) if roles else "none", inline=False
@@ -130,7 +367,7 @@ class Security(commands.Cog):
         try:
             await channel.send(embed=embed)
         except discord.HTTPException:
-            pass
+            log.exception("Failed to post leave log for %s", member.id)
 
     # ---- anti-nuke --------------------------------------------------------
 
@@ -204,7 +441,7 @@ class Security(commands.Cog):
         except discord.HTTPException:
             pass
 
-        channel = await self._log_channel(guild.id)
+        channel = await self._log_channel(guild)
         if channel is None:
             channel = guild.system_channel
         if channel:
@@ -270,20 +507,38 @@ class Security(commands.Cog):
     )
 
     @security.command(
-        name="logchannel", description="Set the join/leave log channel (omit to disable)"
+        name="logchannel",
+        description=f"Set the join/leave log channel (omit to reset to #{DEFAULT_LOG_CHANNEL})",
+    )
+    @app_commands.describe(
+        channel=f"Where to post logs (omit to use #{DEFAULT_LOG_CHANNEL})",
+        disable="Turn join/leave logging off entirely",
     )
     async def logchannel(
         self,
         interaction: discord.Interaction,
         channel: discord.TextChannel | None = None,
+        disable: bool = False,
     ) -> None:
+        if disable:
+            await self.bot.db.set_config(
+                interaction.guild_id, log_channel_id=LOGGING_DISABLED
+            )
+            await interaction.response.send_message(
+                "🔇 Join/leave logging **disabled**.", ephemeral=True
+            )
+            return
+
         await self.bot.db.set_config(
             interaction.guild_id, log_channel_id=channel.id if channel else None
         )
         await interaction.response.send_message(
             f"📋 Join/leave logs will go to {channel.mention}."
             if channel
-            else "Join/leave logging disabled.",
+            else (
+                f"Reset — logs will go to #{DEFAULT_LOG_CHANNEL}, "
+                f"which I'll create on the next join if it doesn't exist."
+            ),
             ephemeral=True,
         )
 
@@ -353,9 +608,20 @@ class Security(commands.Cog):
         embed.add_field(
             name="Log channel",
             value=(
-                f"<#{config['log_channel_id']}>"
+                "🔇 *disabled*"
+                if config and config["log_channel_id"] == LOGGING_DISABLED
+                else f"<#{config['log_channel_id']}>"
                 if config and config["log_channel_id"]
-                else "*not set*"
+                else f"*#{DEFAULT_LOG_CHANNEL} (auto)*"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="Invite tracking",
+            value=(
+                "🟢 on"
+                if interaction.guild.me.guild_permissions.manage_guild
+                else "🔴 needs **Manage Server**"
             ),
             inline=True,
         )
